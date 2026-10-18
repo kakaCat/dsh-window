@@ -1,0 +1,93 @@
+# dsh-window
+
+DSH 窗口插件：把「开一个新窗口」拆成两个业务场景，并为后续的完成回调与 Topic Ledger 提供独立地基。
+
+## 两个场景
+
+| 场景 | 用途 | 默认 mode | 回调 |
+|---|---|---|---|
+| `continuation` | 当前窗口上下文将满，新窗口接管并继续当前任务 | `create` | 无，结果留在新窗口 |
+| `branch` | 原窗口保留主任务，把独立分叉任务交给新窗口 | `fork` | 有，完成后回调原窗口 |
+
+`scenario` 是业务语义，`mode` 是会话创建方式；回调策略只由 `scenario` 决定，不能用 `mode` 反推。
+
+## 提供的工具
+
+- `window_open`：按 scenario 开窗，投递自署来源的 seed，并做标题 / 模式 / 模型继承回执。
+- `window_complete`：branch 完成后上报 `status` 与 `content`；先落结果，再回调 origin。
+- `window_status`：origin / child 只读查询 run 与 callback 状态。
+- `window_retry_callback`：origin 对已落盘但回调未确认的 run 手动重试；同一 `callbackId` 不伪造新结果。
+- `window_dispatch`：向已有 branch child 再派一条任务；不创建新会话，新建 run，完成后仍回调 origin。
+- `window_list`：分页列出本窗口可见的 branch run 摘要（origin 见自己的、child 见分配给自己的）。
+- `window_inspect`：只读查看某个窗口的会话元数据与（可选）分页历史；不做任何写操作。
+- `window_send`：origin 向运行中的 child 投递引导（steer/排队）；只引导、不完成。
+- `window_interrupt`：origin 中断 child 当前轮（turn）或取消整条 run（run）；origin 主动取消不回调自己。
+- `window_wait`：等待一组 branch run 进入终态（all/any + timeout），拉取语义、不消费 callback。
+- `window_topic_create`：在当前项目创建或按 ID 幂等打开项目主题（目标不一致响亮拒绝）。
+- `window_topic_join`：把当前窗口自己加入主题并取得首份同构快照。
+- `window_topic_get`：按 L0 → L1 → L2 → L3 金字塔读取；省略 `topic_id` 只读项目/主题摘要，提供时读 L2 与最近明细分页。
+- `window_topic_append`：追加 `progress | decision | completion | conflict | resolution`（revision CAS、candidate + conflict、supersedes/resolution 关联）；只写台账，从不触发回调。
+- `window_topic_claim`：按任务/模块/文件范围 `acquire | renew | release` 协作占用；同 scope 未过期占用冲突、过期可接管、历史保留。
+
+## 当前阶段边界
+
+已实现：
+
+- 独立插件工程、装载清单与构建；
+- `window_open` 的 continuation / branch 双场景；
+- create 落点（workspaceId 优先、cwd 兜底、都没有则响亮失败）；
+- seed 自署投递（`source.kind='dsh-window-seed'`，永不为 `user`）；
+- branch 运行记录落盘、`run_id` 与 `callback_armed`；
+- `window_complete` 显式完成、结果回调（热窗口 followup、冷窗口 resume）、幂等与冲突拒绝；
+- `window_status` 查询与 `window_retry_callback` 手动重试；
+- `window_dispatch` 复用已有 branch child 再派任务（单 child 单活动 run、需既有委派关系）；
+- `window_list` / `window_inspect` 发现与只读查看；
+- `window_send` 运行中引导（steer/queue）与 `window_interrupt` 中断/取消（turn/run，origin 主动取消不回调自己）；
+- `window_wait` 等待/join（all/any + timeout，事件驱动优先，不消费 callback）；
+- 结构化结果：`window_open`/`window_dispatch` 声明 `output_schema`/`result_required`，`window_complete` 校验 `structured`，`window_status` 回读；
+- branch 生命周期：启动 `reconcile`（孤儿标记、回调重投、半截文件清理）、origin 停止联动 stop、卸载 drain；
+- RunListIndex 可重建投影、`control.jsonl` 控制留痕、`messages.jsonl` guidance 留痕、`audit.jsonl` 只读访问留痕、Agent steer/cancel 能力探测、Config 装配期校验（含 claim 租约上下限）；
+- Topic Ledger（FR-11 / FR-12）：`$DSH_HOME/storages/dsh-window` 下的分层 JSON 金字塔（L0 索引 → L1 项目摘要 → L2 主题摘要 → L3 明细 + `_journal/` 事务恢复），revision CAS、协作占用、conflict/resolution、`window_open(topic_id)` 参与登记与 branch 完成自动 completion 指针；
+- `window` Host Service（§6.5）：`ctx.provide('window', ...)`，方法面覆盖全部工具用例 + `reconcile` + `stopForOrigin`，供外部插件按 `ctx.inject('window')` 可选接入；未装配时调用方按其错误码适配层降级；
+- `window_status` / `window_list` 可复盘 lifecycle 与控制留痕；`window_inspect` 留痕且只给工具名摘要；
+- 新窗口标题按任务派生（`续接：…` / `分叉：…`；显式 `title` 优先，seed 无可派生摘要时回退源标题递增），Agent 预设与模型继承同报三态，投影读数会先解包 `{ver,seq,val}` 行。
+
+**边界**：本插件独立运行，不依赖也不感知任何外部业务插件。普通 `turn/end` 不会触发完成回调；主题的 `activeRuns` 只是 run_id 指针，实时状态以 run store / `window_list` 为准。
+
+## 数据路径
+
+插件根固定为 `$DSH_HOME/storages/dsh-window`（未设置 `DSH_HOME` 时默认 `~/.dsh/storages/dsh-window`）；
+run 记录与 Topic Ledger 共用这一根：
+
+```text
+$DSH_HOME/storages/dsh-window/
+├── manifest.json                 # schemaVersion / storageVersion
+├── index.json                    # L0：项目与主题指针
+├── runs/                         # branch run（window_status / list / retry 的规范位置）
+│   ├── index.json                # RunListIndex 可重建投影
+│   └── <runId>/
+│       ├── run.json              # run 状态、完成结果与 callback 状态
+│       ├── control.jsonl         # send/interrupt/stop/orphan/drain 控制留痕
+│       └── messages.jsonl        # guidance 留痕（RunMessage，只存摘要）
+├── audit.jsonl                   # window_inspect 等只读访问留痕
+├── projects/<projectHash>/       # L1
+│   ├── project.json
+│   └── topics/<topicHash>/       # L2
+│       ├── topic.json            # 身份卡（目标、revision、创建者）
+│       ├── summary.json          # 由 L3 明细重建的有界汇总
+│       ├── participants/  entries/  claims/  conflicts/
+└── _journal/                     # 跨文件事务恢复区（模型不可读）
+```
+
+路径段一律是 sha256 前缀：原始 projectId / cwd / topicId / scope / 窗口 id 不作为文件路径段。
+
+未设置 `DSH_HOME` 时默认根为 `~/.dsh/storages/dsh-window`。插件可配：`dataRoot`、`orphanTimeoutMs`（缺省 24h）、`waitPollMs`（缺省 500ms）、`leaseMinMs` / `leaseMaxMs`（claim 租约夹逼，缺省 1s / 24h；倒挂即失败）。非法值在装配期响亮失败（`WINDOW_CONFIG_INVALID`）。
+
+## 开发
+
+```bash
+pnpm install
+pnpm typecheck
+pnpm test
+pnpm build
+```

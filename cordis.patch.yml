@@ -1,0 +1,9 @@
+# dsh-window 的装载层（bundle patch）。
+# 注册 15 个 window_* 工具，并通过 ctx.provide('window', ...) 暴露 Host Service：
+# open / complete / get / retryCallback / list / inspect / dispatch / send / interrupt / wait /
+# topicCreate / topicJoin / topicGet / topicAppend / topicClaim / reconcile / stopForOrigin。
+# 可选配置：dataRoot / orphanTimeoutMs / waitPollMs / leaseMinMs / leaseMaxMs。
+- insert:
+    - id: dsh-window
+      name: dsh-window
+      config: {}
