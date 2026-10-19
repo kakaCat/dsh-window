@@ -1,6 +1,42 @@
 # dsh-window
 
-DSH 窗口插件：把「开一个新窗口」拆成两个业务场景，并为后续的完成回调与 Topic Ledger 提供独立地基。
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+[DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh-tools)（DSH）的窗口插件：把「开一个新窗口」拆成两个业务场景，并为后续的完成回调与 Topic Ledger 提供独立地基。
+
+DSH 是一个以 Cordis 组合机制装载插件的智能体运行环境；本仓库是一个独立的 Cordis bundle（见 [cordis.patch.yml](cordis.patch.yml)），为 DSH Agent 提供一组 `window_*` 工具与可注入的 `window` Host Service。
+
+> **状态**：当前为 0.x 早期阶段，工具面与存储格式仍可能变动，升级前请留意提交说明。
+
+## 安装
+
+前置要求：Node.js ≥ 20，以及一个运行中的 DSH profile。
+
+```bash
+git clone https://github.com/kakaCat/dsh-window.git
+cd dsh-window
+pnpm install
+pnpm build
+```
+
+然后在任意一个 DSH 会话中让 Agent 安装本 bundle（以仓库的绝对路径为准）：
+
+> 请用 plugin_manager 的 install_bundle 把 `/path/to/dsh-window` 安装到当前 profile。
+
+安装即时生效；插件清单里出现 `dsh-window` 一行即为成功。之后 Agent 即可调用 `window_open` 等工具（见下）。
+
+### 可选配置
+
+在 [cordis.patch.yml](cordis.patch.yml) 的 `config` 中（或装配层等价位置）可配：
+
+| 键 | 缺省 | 说明 |
+|---|---|---|
+| `dataRoot` | `$DSH_HOME/storages/dsh-window` | 数据根目录（见「数据路径」） |
+| `orphanTimeoutMs` | 24h | 孤儿 run 判定超时 |
+| `waitPollMs` | 500ms | `window_wait` 轮询间隔 |
+| `leaseMinMs` / `leaseMaxMs` | 1s / 24h | 协作占用（claim）租约上下限，倒挂即装配期失败 |
+
+非法值在装配期响亮失败（`WINDOW_CONFIG_INVALID`）。
 
 ## 两个场景
 
@@ -47,8 +83,8 @@ DSH 窗口插件：把「开一个新窗口」拆成两个业务场景，并为�
 - 结构化结果：`window_open`/`window_dispatch` 声明 `output_schema`/`result_required`，`window_complete` 校验 `structured`，`window_status` 回读；
 - branch 生命周期：启动 `reconcile`（孤儿标记、回调重投、半截文件清理）、origin 停止联动 stop、卸载 drain；
 - RunListIndex 可重建投影、`control.jsonl` 控制留痕、`messages.jsonl` guidance 留痕、`audit.jsonl` 只读访问留痕、Agent steer/cancel 能力探测、Config 装配期校验（含 claim 租约上下限）；
-- Topic Ledger（FR-11 / FR-12）：`$DSH_HOME/storages/dsh-window` 下的分层 JSON 金字塔（L0 索引 → L1 项目摘要 → L2 主题摘要 → L3 明细 + `_journal/` 事务恢复），revision CAS、协作占用、conflict/resolution、`window_open(topic_id)` 参与登记与 branch 完成自动 completion 指针；
-- `window` Host Service（§6.5）：`ctx.provide('window', ...)`，方法面覆盖全部工具用例 + `reconcile` + `stopForOrigin`，供外部插件按 `ctx.inject('window')` 可选接入；未装配时调用方按其错误码适配层降级；
+- Topic Ledger（[FR-11](docs/requirements/REQ-DSH-WINDOW-001.md) / [FR-12](docs/requirements/REQ-DSH-WINDOW-001.md)）：`$DSH_HOME/storages/dsh-window` 下的分层 JSON 金字塔（L0 索引 → L1 项目摘要 → L2 主题摘要 → L3 明细 + `_journal/` 事务恢复），revision CAS、协作占用、conflict/resolution、`window_open(topic_id)` 参与登记与 branch 完成自动 completion 指针；
+- `window` Host Service（[§6.5](docs/requirements/REQ-DSH-WINDOW-001.md)）：`ctx.provide('window', ...)`，方法面覆盖全部工具用例 + `reconcile` + `stopForOrigin`，供外部插件按 `ctx.inject('window')` 可选接入；未装配时调用方按其错误码适配层降级；
 - `window_status` / `window_list` 可复盘 lifecycle 与控制留痕；`window_inspect` 留痕且只给工具名摘要；
 - 新窗口标题按任务派生（`续接：…` / `分叉：…`；显式 `title` 优先，seed 无可派生摘要时回退源标题递增），Agent 预设与模型继承同报三态，投影读数会先解包 `{ver,seq,val}` 行。
 
@@ -81,7 +117,7 @@ $DSH_HOME/storages/dsh-window/
 
 路径段一律是 sha256 前缀：原始 projectId / cwd / topicId / scope / 窗口 id 不作为文件路径段。
 
-未设置 `DSH_HOME` 时默认根为 `~/.dsh/storages/dsh-window`。插件可配：`dataRoot`、`orphanTimeoutMs`（缺省 24h）、`waitPollMs`（缺省 500ms）、`leaseMinMs` / `leaseMaxMs`（claim 租约夹逼，缺省 1s / 24h；倒挂即失败）。非法值在装配期响亮失败（`WINDOW_CONFIG_INVALID`）。
+未设置 `DSH_HOME` 时默认根为 `~/.dsh/storages/dsh-window`。配置项见上文「可选配置」。
 
 ## 开发
 
@@ -91,3 +127,17 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
+
+## 文档
+
+- 需求与设计：[docs/requirements/REQ-DSH-WINDOW-001.md](docs/requirements/REQ-DSH-WINDOW-001.md)
+- 架构决策记录：[docs/adr/](docs/adr/)
+- 端到端自测指南：[docs/guides/e2e-self-test.md](docs/guides/e2e-self-test.md)
+
+## 贡献
+
+欢迎 Issue 与 Pull Request。提交前请确保 `pnpm typecheck` 与 `pnpm test` 全绿；涉及存储格式或工具面变更时，请同步更新 README 与 [docs/requirements](docs/requirements/)。
+
+## License
+
+[MIT](LICENSE) © kakaCat

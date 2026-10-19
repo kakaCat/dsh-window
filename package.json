@@ -5,6 +5,21 @@
   "type": "module",
   "description": "DSH 窗口插件：续接（continuation）与分叉（branch）双场景开窗、运行登记与后续完成回调的通用基础",
   "license": "MIT",
+  "author": "kakaCat <253834671@qq.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kakaCat/dsh-window.git"
+  },
+  "homepage": "https://github.com/kakaCat/dsh-window#readme",
+  "bugs": "https://github.com/kakaCat/dsh-window/issues",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "window",
+    "agent"
+  ],
   "engines": {
     "node": ">=20"
   },
