@@ -37,8 +37,19 @@ function inspectSummary(value: unknown): string {
   const meta = (record['meta'] ?? {}) as Record<string, unknown>
   const history = record['history'] as Record<string, unknown> | undefined
   const count = Array.isArray(history?.['items']) ? (history?.['items'] as unknown[]).length : 0
-  return `🔍 ${String(meta['window_key'] ?? '?')}（running=${String(meta['running'] ?? 'unknown')}`
+  const running = meta['running']
+  const runStatus = record['run_status']
+  const head = `🔍 ${String(meta['window_key'] ?? '?')}（running=${String(running ?? 'unknown')}`
+    + `${runStatus === undefined ? '' : `，run_status=${String(runStatus)}`}`
     + `${record['history'] === undefined ? '' : `，history=${count} 条`}）`
+  // 关键交叉判据：run 说在跑、会话却明确不在线 ⇒ 子窗口很可能已停但没上报完成。
+  if (running === false && (runStatus === 'running' || runStatus === 'pending')) {
+    return head
+      + `\n⚠️ 不一致：run 仍是 ${String(runStatus)}，但该会话不在线（不会自己恢复）。`
+      + '如需继续，window_send 追加引导（离线会失败），或 window_interrupt(mode=\'run\') 收口后 window_dispatch 派新 run；'
+      + '若它其实还在跑，先 window_wait。'
+  }
+  return head
 }
 
 /** 定义 `window_list`。 */
@@ -153,6 +164,8 @@ export function defineWindowInspectTool(deps: WindowDeps) {
             },
           },
           untrusted: { type: 'boolean' },
+          run_status: { type: 'string', description: '该窗口作为 child 的 run 状态；无 run 关系时缺省' },
+          lifecycle_state: { type: 'string' },
           history: {
             type: 'object',
             additionalProperties: false,
@@ -214,6 +227,8 @@ export function defineWindowInspectTool(deps: WindowDeps) {
           ...(meta.eventCount === undefined ? {} : { event_count: meta.eventCount }),
         },
         untrusted: value.untrusted,
+        ...(value.run_status === undefined ? {} : { run_status: value.run_status }),
+        ...(value.lifecycle_state === undefined ? {} : { lifecycle_state: value.lifecycle_state }),
         ...(value.history === undefined
           ? {}
           : {

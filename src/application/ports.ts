@@ -179,7 +179,7 @@ export interface RunRecord {
   resultRequired?: boolean
   /** 生命周期归属；缺省视为 active。 */
   lifecycle?: RunLifecycle
-  /** 最近一次 seed/guidance/轮次或状态变化时间；旧记录缺省按 updatedAt 处理。 */
+  /** 最近一次 seed/guidance/控制操作或状态变化时间；旧记录缺省按 updatedAt 处理。不随每个回合刷新。 */
   lastActivityAt?: number
   createdAt: number
   updatedAt: number
@@ -1219,6 +1219,8 @@ export interface WaitRunsValue {
   /** 调用方取消信号命中；返回当前快照。 */
   aborted?: boolean
   runs: WindowListRow[]
+  /** 超时时的建议动作；超时只是到点，既不代表完成，也不代表目标停滞。 */
+  hint?: string
 }
 
 /** `window_inspect` 输入。 */
@@ -1234,6 +1236,9 @@ export interface WindowInspectValue {
   meta: WindowInspectMeta
   /** 历史内容按不可信数据处理。 */
   untrusted: true
+  /** 该窗口作为 child 的可见 run 状态；自省或无 run 关系时缺省。只读事实，不含 result 正文。 */
+  run_status?: RunStatus
+  lifecycle_state?: string
   history?: { items: WindowHistoryItem[]; next_cursor?: string }
 }
 

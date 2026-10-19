@@ -109,6 +109,23 @@ describe('FsRunStore', () => {
     expect(rebuilt.map((row) => row.runId).sort()).toEqual(['run-a', 'run-b'])
   })
 
+  it('旧索引行缺 lastActivityAt 时按 updatedAt 补齐，投影字段恒为数字', async () => {
+    const root = await tempRoot()
+    const store = new FsRunStore({ root })
+    await store.create(record({ runId: 'run-a', lastActivityAt: 7, updatedAt: 7 }))
+
+    // 模拟旧版本写下的索引行：没有 lastActivityAt 字段。
+    const legacy = JSON.parse(await readFile(store.indexPath(), 'utf8')) as Record<string, unknown>[]
+    for (const row of legacy) delete row['lastActivityAt']
+    await writeFile(store.indexPath(), JSON.stringify(legacy, null, 2), 'utf8')
+
+    const rows = await store.listIndex()
+    const row = rows.find((item) => item.runId === 'run-a')
+    expect(typeof row?.lastActivityAt).toBe('number')
+    expect(row?.lastActivityAt).toBe(7)
+  })
+
+
   it('control.jsonl append-only 追加与读取', async () => {
     const store = new FsRunStore({ root: await tempRoot() })
     await store.create(record())

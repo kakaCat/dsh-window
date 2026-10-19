@@ -30,14 +30,24 @@ export async function inspectWindow(
     reject('WINDOW_OPEN_UNAVAILABLE', 'window_inspect 未执行：本宿主未装配会话只读探测能力')
   }
 
+  const store = deps.runStore
+  const runs = store === undefined || !store.available() ? [] : await store.list()
   if (windowKey !== caller) {
-    const store = deps.runStore
-    const runs = store === undefined || !store.available() ? [] : await store.list()
     const related = runs.some((run) => run.originSessionId === caller && run.childSessionId === windowKey)
     if (!related) {
       reject('WINDOW_RUN_FORBIDDEN', `本窗口与 ${windowKey} 没有 run 关系，不能查看它的会话信息`)
     }
   }
+
+  // 只读事实：该窗口作为 child 的 run 状态（供摘要判断“run 说在跑、会话却不在线”）。
+  const relatedRun = runs.find((run) => run.childSessionId === windowKey)
+  const runFacts =
+    relatedRun === undefined
+      ? {}
+      : {
+          run_status: relatedRun.status,
+          ...(relatedRun.lifecycle === undefined ? {} : { lifecycle_state: relatedRun.lifecycle.state }),
+        }
 
   let meta
   try {
@@ -63,7 +73,7 @@ export async function inspectWindow(
   }
 
   if (raw.includeHistory !== true) {
-    return { meta, untrusted: true }
+    return { meta, untrusted: true, ...runFacts }
   }
 
   const limit = raw.limit === undefined ? DEFAULT_HISTORY_LIMIT : raw.limit
@@ -80,6 +90,7 @@ export async function inspectWindow(
     return {
       meta,
       untrusted: true,
+      ...runFacts,
       history: {
         items: history.items,
         ...(history.nextCursor === undefined ? {} : { next_cursor: history.nextCursor }),

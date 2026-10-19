@@ -84,6 +84,24 @@ describe('window_wait', () => {
     expect(value.runs[0]).toMatchObject({ run_id: 'run-a', run_status: 'running' })
   })
 
+  it('超时带 hint：明说超时≠停滞、给出下一步；收齐/取消不带 hint', async () => {
+    const store = await tempStore()
+    await store.create(record({ runId: 'run-a' }))
+    const timedOut = await waitRuns(deps(store), { runIds: ['run-a'], mode: 'all', timeoutMs: 40 }, exec('session-o1'))
+    expect(timedOut.hint).toBeTypeOf('string')
+    expect(timedOut.hint).toContain('不说明停滞')
+    expect(timedOut.hint).toContain('1 条 run 未终态')
+    expect(timedOut.hint).toContain('window_inspect')
+    // 光看 last_activity_at 判不出停滞：hint 必须把这条讲清楚。
+    expect(timedOut.hint).toContain('last_activity_at')
+
+    const done = await tempStore()
+    await done.create(record({ runId: 'run-a', status: 'completed' }))
+    const collected = await waitRuns(deps(done), { runIds: ['run-a'], mode: 'all', timeoutMs: 500 }, exec('session-o1'))
+    expect(collected.timed_out).toBe(false)
+    expect(collected.hint).toBeUndefined()
+  })
+
   it('调用方取消返回 aborted 快照', async () => {
     const store = await tempStore()
     await store.create(record({ runId: 'run-a' }))

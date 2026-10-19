@@ -21,7 +21,8 @@ function waitSummary(value: unknown): string {
   const record = value as Record<string, unknown>
   const runs = Array.isArray(record['runs']) ? record['runs'] : []
   const flag = record['aborted'] === true ? '已取消' : record['timed_out'] === true ? '超时' : '已收齐'
-  return `⏳ window_wait ${flag}：${runs.length} 条 run`
+  const hint = typeof record['hint'] === 'string' && record['hint'].length > 0 ? `\n${record['hint']}` : ''
+  return `⏳ window_wait ${flag}：${runs.length} 条 run${hint}`
 }
 
 /** 定义 `window_wait`。 */
@@ -48,6 +49,7 @@ export function defineWindowWaitTool(deps: WindowDeps) {
         properties: {
           timed_out: { type: 'boolean' },
           aborted: { type: 'boolean' },
+          hint: { type: 'string', description: '超时时的建议动作' },
           runs: {
             type: 'array',
             items: {

@@ -52,7 +52,8 @@ export function listRowOf(row: RunIndexRow): WindowListRow {
     ...(row.lifecycleState === undefined ? {} : { lifecycle_state: row.lifecycleState }),
     callback: { status: row.callbackStatus, attempts: row.callbackAttempts },
     ...(row.topicId === undefined ? {} : { topic_id: row.topicId }),
-    last_activity_at: row.lastActivityAt,
+    // 兜底：旧索引行可能缺 lastActivityAt（口径见 RunRecord.lastActivityAt 文档）。
+    last_activity_at: row.lastActivityAt ?? row.updatedAt ?? row.createdAt,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
   }

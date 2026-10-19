@@ -36,17 +36,19 @@ function fakeStore(runs: RunRecord[]): RunStorePort {
   }
 }
 
+const fakeMeta: WindowInspectMeta = {
+  windowKey: 'session-c1',
+  title: '子任务',
+  cwd: '/ws',
+  parentSessionId: 'session-o1',
+  agentPreset: 'standard',
+  modelSelection: { provider: 'deepseek', model: 'chat' },
+  running: true,
+  eventCount: 3,
+}
+
 function fakeInspector(over: Partial<WindowInspectPort> = {}): WindowInspectPort {
-  const meta: WindowInspectMeta = {
-    windowKey: 'session-c1',
-    title: '子任务',
-    cwd: '/ws',
-    parentSessionId: 'session-o1',
-    agentPreset: 'standard',
-    modelSelection: { provider: 'deepseek', model: 'chat' },
-    running: true,
-    eventCount: 3,
-  }
+  const meta: WindowInspectMeta = fakeMeta
   return {
     inspect: async () => meta,
     history: async () => ({
@@ -88,6 +90,36 @@ describe('window_inspect', () => {
     )
     expect(withHistory.history?.items.map((item) => item.text)).toEqual(['做这个', '好的'])
   })
+
+  it('回执带上该窗口自己的 run 状态，供判断“run 在跑但会话已停”', async () => {
+    const value = await inspectWindow(
+      deps({ windowInspect: fakeInspector(), runStore: fakeStore([record({ status: 'running' })]) }),
+      { windowKey: 'session-c1' },
+      exec('session-o1'),
+    )
+    expect(value.run_status).toBe('running')
+    expect(value.meta.running).toBe(true)
+
+    // 会话明确不在线（running=false），而 run 还是 running：两个事实都要如实给出。
+    const stopped = fakeInspector({ inspect: async () => ({ ...fakeMeta, running: false }) })
+    const stalled = await inspectWindow(
+      deps({ windowInspect: stopped, runStore: fakeStore([record({ status: 'running' })]) }),
+      { windowKey: 'session-c1' },
+      exec('session-o1'),
+    )
+    expect(stalled.meta.running).toBe(false)
+    expect(stalled.run_status).toBe('running')
+  })
+
+  it('无 run 关系时不编造 run 状态', async () => {
+    const value = await inspectWindow(
+      deps({ windowInspect: fakeInspector(), runStore: fakeStore([]) }),
+      { windowKey: 'session-c1' },
+      exec('session-c1'),
+    )
+    expect(value.run_status).toBeUndefined()
+  })
+
 
   it('无 run 关系的窗口被拒', async () => {
     const value = deps({ windowInspect: fakeInspector(), runStore: fakeStore([record()]) })

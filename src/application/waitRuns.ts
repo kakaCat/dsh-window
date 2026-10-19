@@ -203,5 +203,18 @@ export async function waitRuns(
   const outcome = await waitUntil(deps, check, input.timeoutMs, signal)
   const runs = await snapshot()
   if (outcome === 'aborted') return { timed_out: false, aborted: true, runs }
-  return { timed_out: outcome === 'timeout', runs }
+  if (outcome !== 'timeout') return { timed_out: false, runs }
+  const pending = runs.filter((run) => !TERMINAL.has(run.run_status))
+  return {
+    timed_out: true,
+    runs,
+    ...(pending.length === 0
+      ? {}
+      : {
+          hint:
+            `超时只说明到点，不说明停滞：仍有 ${pending.length} 条 run 未终态。` +
+            'last_activity_at 不随回合刷新，不能作为停滞判据；要判断子窗口是否还在干活，' +
+            "用 window_inspect 看 running 与历史；必要时 window_send 追加引导，或 window_interrupt(mode='turn') 只中断当前轮（run 仍在、收件箱保留）。",
+        }),
+  }
 }

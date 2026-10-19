@@ -140,6 +140,15 @@ async function runTool(
   return value as Record<string, unknown>
 }
 
+/** 把 render 产出的内容块拼成纯文本（只看 text 块）。 */
+function renderText(tool: { output: { render: (...args: never[]) => unknown } }, value: unknown): string {
+  const render = tool.output.render as unknown as (a: unknown, v: unknown) => { type: string; text?: string }[]
+  return render({}, value)
+    .filter((block) => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('\n')
+}
+
 describe('工具回执符合 output schema', () => {
   it('window_open（含结构化 schema）', async () => {
     const store = new MemoryRunStore()
@@ -181,5 +190,32 @@ describe('工具回执符合 output schema', () => {
     const waited = await runTool(defineWindowWaitTool(deps) as never, { run_ids: ['run-1'], mode: 'all', timeout_ms: 30 })
     expect(waited['timed_out']).toBe(true)
     await runTool(defineWindowInterruptTool(deps) as never, { run_id: 'run-1', mode: 'run' })
+  })
+
+  it('超时 hint 与 inspect 不一致告警要真正进到模型可见文本', async () => {
+    const store = new MemoryRunStore()
+    await store.create(record())
+    const deps = makeDeps({ runStore: store, windowInspect: inspector(), agentControl: control(), waitPollMs: 20, windowOpener: opener() })
+
+    const waitTool = defineWindowWaitTool(deps)
+    const waited = await runTool(waitTool as never, { run_ids: ['run-1'], mode: 'all', timeout_ms: 30 })
+    expect(waited['hint']).toBeTypeOf('string')
+    const waitText = renderText(waitTool, waited)
+    expect(waitText).toContain(String(waited['hint']))
+    expect(waitText).toContain('不说明停滞')
+
+    // 会话不在线、run 仍 running：摘要必须提示不一致，而不是只说 running=false。
+    const stalledDeps = makeDeps({
+      runStore: store,
+      windowInspect: { ...inspector(), inspect: async (windowKey) => ({ windowKey, running: false }) },
+      agentControl: control(),
+      windowOpener: opener(),
+    })
+    const inspectTool = defineWindowInspectTool(stalledDeps)
+    const inspected = await runTool(inspectTool as never, { window_key: CHILD })
+    expect(inspected['run_status']).toBe('running')
+    const inspectText = renderText(inspectTool, inspected)
+    expect(inspectText).toContain('不一致')
+    expect(inspectText).toContain('window_dispatch')
   })
 })

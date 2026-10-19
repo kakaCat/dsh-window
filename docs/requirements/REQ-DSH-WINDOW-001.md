@@ -739,7 +739,7 @@ ctx.provide('window', {
 | `result` | 状态、非空内容、可选 structured、完成者、完成时间、completionId；首次成功写入为权威版本 |
 | `callback` | callbackId、状态、attempts、reason、deliveredAt；与 runStatus 分离；状态含 not_armed/not_requested/pending/delivered/failed/unknown |
 | `lifecycle` | active/stopped/orphaned/drained、原因与时间；与 result/callback 分离 |
-| `lastActivityAt` | 最近 seed/guidance/轮次或状态变化时间；供 window_list 排序与 orphan 判定 |
+| `lastActivityAt` | 最近 seed/guidance/控制操作或状态变化时间；供 window_list 排序与 orphan 判定。**不随每个回合刷新**，故不可用作“任务是否停滞”的判据 |
 | `controlEvents` | append-only：send / interrupt-turn / interrupt-run / stop / orphan / drain 的 actor、原因、时间与结果 |
 | `createdAt/updatedAt` | 持久化审计时间 |
 

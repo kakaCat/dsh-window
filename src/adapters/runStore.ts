@@ -438,8 +438,19 @@ export class FsRunStore implements RunStorePort {
     try {
       const parsed = JSON.parse(text) as unknown
       if (!Array.isArray(parsed)) return []
-      return parsed.filter((row): row is RunIndexRow =>
-        row !== null && typeof row === 'object' && typeof (row as { runId?: unknown }).runId === 'string')
+      const rows: RunIndexRow[] = []
+      for (const row of parsed) {
+        if (row === null || typeof row !== 'object') continue
+        const candidate = row as Partial<RunIndexRow>
+        if (typeof candidate.runId !== 'string') continue
+        // 旧记录可能缺 lastActivityAt：按“缺省按 updatedAt 处理”的口径补齐，
+        // 保证投影字段恒为数字（window_list 的 last_activity_at 声明为 number）。
+        rows.push({
+          ...candidate,
+          lastActivityAt: candidate.lastActivityAt ?? candidate.updatedAt ?? candidate.createdAt ?? 0,
+        } as RunIndexRow)
+      }
+      return rows
     } catch {
       return []
     }
