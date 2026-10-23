@@ -27,8 +27,15 @@ export const WINDOW_OPEN_PROMPT = `打开一个新窗口，按业务目的选择
 - output_schema 是 object 根 JSON Schema 子集；声明后子窗口必须用 window_complete 带 structured 上报。
 - result_required=true 时必须同时给 output_schema；非法 schema → WINDOW_OUTPUT_SCHEMA_INVALID（不创建 run）。
 
-多窗口协作（topic_id）：
+跨工作区开窗（target_workspace）：
+- 仅 mode=create：提供 target_workspace 时必须显式 mode='create'；fork 继承源会话 cwd，不能换工作区。
+- 接受 workspace id、标题或绝对路径；命中多个或不命中都会响亮失败（WINDOW_WORKSPACE_AMBIGUOUS / NOT_FOUND），不会退回源工作区。
+- 子窗建立后，origin→child 的 window_send / window_dispatch / window_complete / window_wait 与同工作区完全一致；dispatch 派给已有 child 时自动沿用它的工作区。
+- 与项目内 topic_id 不能组合；跨工作区协作请用 topic_scope=global（见下）。
+
+多窗口协作（topic_id / topic_scope）：
 - 提供 topic_id 时，origin 与 child 会在投递 seed 前登记进同一主题并取得同一 revision 快照，回执 topic_tracking=true、topic_revision=开跑版本。
+- topic_scope 缺省 project（主题按调用窗口所在项目寻址）；topic_scope=global 使用跨工作区共享主题，可同时与 target_workspace 组合。
 - 主题不存在 → WINDOW_TOPIC_NOT_FOUND；主题存储不可用 → WINDOW_TOPIC_STORAGE_UNAVAILABLE；两者都在建会话前失败，不会静默降级成未跟踪协作。
 - 缺席 topic_id 时保持原行为并返回 topic_tracking=false，不声称具备协作防冲突能力。
 
@@ -81,9 +88,18 @@ export function defineWindowOpenTool(deps: OpenWindowDeps) {
         required: true,
         description: 'continuation 的断点底稿，或 branch 的独立任务包；不能为空',
       },
+      target_workspace: {
+        type: 'string',
+        description: '目标工作区（workspace id / 标题 / 绝对路径）；仅 mode=create；子窗建到该工作区后与 origin 的父子消息完全互通',
+      },
       topic_id: {
         type: 'string',
         description: '多窗口协作主题；提供时 origin/child 会在投递 seed 前登记并绑定同一 revision',
+      },
+      topic_scope: {
+        type: 'string',
+        enum: ['project', 'global'],
+        description: '主题作用域；缺省 project；global 时允许与 target_workspace 组合，跨工作区共用一个主题',
       },
       output_schema: {
         type: 'json',
@@ -106,9 +122,20 @@ export function defineWindowOpenTool(deps: OpenWindowDeps) {
           window_key: { type: 'string', description: '新窗口码（= 新会话 id）；失败时如已创建也会返回' },
           parent_session_id: { type: 'string', description: 'fork 的源窗口；create 时省略' },
           mode: { type: 'string', description: '实际使用的 fork / create' },
+          target_workspace: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              id: { type: 'string', description: 'workspace id' },
+              title: { type: 'string', description: 'workspace 显示名' },
+              path: { type: 'string', description: 'workspace 绝对路径' },
+            },
+            description: '显式指定 target_workspace 时的实际落点',
+          },
           run_id: { type: 'string', description: '仅 branch：运行记录 id' },
           topic_tracking: { type: 'boolean', description: '是否已登记进项目主题台账；false 时不具备协作防冲突能力' },
           topic_id: { type: 'string', description: '协作主题 ID' },
+          topic_scope: { type: 'string', description: '本次主题作用域：project / global' },
           topic_revision: { type: 'integer', description: '开窗口时登记的主题 revision（用作完成时的 base_revision）' },
           callback_armed: { type: 'boolean', description: 'continuation 恒 false；branch seed 投递成功时为 true（此时完成后会回调原窗口）' },
           delivery: {
@@ -146,7 +173,9 @@ export function defineWindowOpenTool(deps: OpenWindowDeps) {
           ...(args.at_seq === undefined ? {} : { atSeq: args.at_seq }),
           ...(args.title === undefined ? {} : { title: args.title }),
           seedText: args.seed_text,
+          ...(args.target_workspace === undefined ? {} : { targetWorkspace: args.target_workspace }),
           ...(args.topic_id === undefined ? {} : { topicId: args.topic_id }),
+          ...(args.topic_scope === undefined ? {} : { topicScope: args.topic_scope }),
           ...(args.output_schema === undefined ? {} : { outputSchema: args.output_schema }),
           ...(args.result_required === undefined ? {} : { resultRequired: args.result_required }),
         },

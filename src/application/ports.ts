@@ -3,7 +3,7 @@
  *
  * @module dsh-window/application/ports
  */
-import type { OpenWindowInput, RunTerminalStatus, Scenario, WindowMode } from '../shared/protocol.js'
+import type { OpenWindowInput, RunTerminalStatus, Scenario, TopicScope, WindowMode } from '../shared/protocol.js'
 
 /** 继承三态：set = 已写入；skipped = 源本来没有；failed = 想做没做成。 */
 export type WindowInheritanceStatus = 'set' | 'skipped' | 'failed'
@@ -35,6 +35,24 @@ export interface WindowCreateOptions {
   agentPreset?: string
 }
 
+/** 显式目标工作区的公开读数；只想让模型看到可寻址信息，不暴露会话清单。 */
+export interface WindowWorkspaceTarget {
+  id: string
+  title: string
+  path?: string
+}
+
+/** 目标工作区解析结果；不命中/歧义必须显式返回，不得猜一个继续开窗。 */
+export type WindowWorkspaceResolution =
+  | { ok: true; workspace: WindowWorkspaceTarget }
+  | {
+      ok: false
+      code: 'not_found' | 'ambiguous' | 'unavailable'
+      reason: string
+      /** 供调用方改口的候选；只含 id/title/path，不含任何会话内容。 */
+      candidates?: WindowWorkspaceTarget[]
+    }
+
 /** 继承回执：三项状态并列，不折叠成败。 */
 export interface WindowInheritance {
   title: WindowInheritanceStatus
@@ -62,6 +80,11 @@ export interface WindowOpenerPort {
   create(opts?: WindowCreateOptions): Promise<OpenWindowOutcome>
   /** 源会话所属项目；拿不到返回 undefined，不猜。 */
   resolveSourceProject?(sourceSessionId: string): WindowCreateOptions | undefined
+  /**
+   * 解析显式目标工作区：接受 workspace id、标题或绝对路径。
+   * 未命中/歧义/能力缺失必须如实返回，不允许猜测后继续建窗。
+   */
+  resolveWorkspace?(query: string): WindowWorkspaceResolution
   /** 冷读源会话画像；读不到必须抛错，不得静默返回 undefined。 */
   readProfile?(sessionId: string): Promise<WindowSourceProfile>
   /** 写定会话标题。 */
@@ -76,13 +99,17 @@ export interface SeedDeliveryPort {
   createMessage(params: {
     text: string
     kind: string
-    scenario: Scenario
+    /** seed / 回调场景必给；主题协作消息没有 run 与业务场景，可省略。 */
+    scenario?: Scenario
     runId?: string
     /** 可选确定性消息 id；回调使用 callbackId 以保证重试同一条逻辑消息。 */
     messageId?: string
     /** FR-7：回调来源读数，便于按 child/callbackId 对账。 */
     childSessionId?: string
     callbackId?: string
+    /** FR-22：主题协作消息的来源读数；只写 ID，不写正文。 */
+    topicId?: string
+    entryId?: string
   }): { message: unknown; messageId: string }
   /** 投给任意窗口；冷会话可先 resume。永不抛，返回结构化结果。 */
   deliver(windowKey: string, message: unknown): Promise<{ delivered: boolean; reason?: string }>
@@ -309,12 +336,18 @@ export interface WindowHistoryItem {
  * - 汇总投影一律由 L3 明细派生，明细与汇总不一致时以明细为准并重建。
  * -------------------------------------------------------------------------- */
 
-/** 项目身份来源：优先 workspaceId，无 workspace 时才用规范化 cwd 并显式标记。 */
-export type TopicProjectSource = 'workspaceId' | 'cwd'
+/** 项目身份来源：优先 workspaceId，无 workspace 时才用规范化 cwd；global = 跨工作区共享命名空间。 */
+export type TopicProjectSource = 'workspaceId' | 'cwd' | 'global'
+
+/** 全局主题的保留项目 ID；不指向任何真实工作区，也不得与 workspaceId 混用。 */
+export const GLOBAL_PROJECT_ID = '@global'
+
+/** 全局主题的固定项目引用；所有 global scope 主题都落在这一命名空间下。 */
+export const GLOBAL_TOPIC_PROJECT: TopicProjectRef = { projectId: GLOBAL_PROJECT_ID, source: 'global' }
 
 /** 项目引用；同一项目在整个存储内必须始终使用同一 projectId + source。 */
 export interface TopicProjectRef {
-  /** workspaceId，或（source='cwd' 时）规范化后的 cwd。 */
+  /** workspaceId，或（source='cwd' 时）规范化后的 cwd；source='global' 时固定为 GLOBAL_PROJECT_ID。 */
   projectId: string
   source: TopicProjectSource
 }
@@ -356,8 +389,8 @@ export interface TopicParticipantInput {
   at: number
 }
 
-/** 主题 entry 类型；全部 append-only。 */
-export type TopicEntryKind = 'progress' | 'decision' | 'completion' | 'conflict' | 'resolution'
+/** 主题 entry 类型；全部 append-only。message = 跨窗口协作消息（投递给其他参与者，不参与 CAS）。 */
+export type TopicEntryKind = 'progress' | 'decision' | 'completion' | 'conflict' | 'resolution' | 'message'
 
 /** 需要 base_revision 做 CAS 的 entry 类型（§6.8）。 */
 export const TOPIC_CAS_ENTRY_KINDS = ['decision', 'completion', 'conflict', 'resolution'] as const
@@ -909,12 +942,16 @@ export interface TopicCreateToolInput {
   topicId?: string
   title: string
   objective: string
+  /** 主题作用域；缺省 project。global = 跨工作区共享主题。 */
+  topicScope?: TopicScope
 }
 
 /** `window_topic_create` 回执。 */
 export interface TopicCreateValue {
   project_id: string
   project_source: TopicProjectSource
+  /** 本次创建/打开所用作用域；global 时 project_id 固定为 `@global`。 */
+  topic_scope: TopicScope
   topic_id: string
   title: string
   objective: string
@@ -931,6 +968,8 @@ export interface TopicCreateValue {
 export interface TopicJoinToolInput {
   topicId: string
   scenario?: Scenario
+  /** 主题作用域；缺省 project。global = 跨工作区共享主题。 */
+  topicScope?: TopicScope
 }
 
 /** `window_topic_join` 回执：参与者记录 + 一份与 get 同构的 L2/L3 快照。 */
@@ -947,12 +986,16 @@ export interface TopicGetToolInput {
   topicId?: string
   cursor?: string
   limit?: number
+  /** 主题作用域；缺省 project。global 时省略 topic_id 读全局主题清单。 */
+  topicScope?: TopicScope
 }
 
 /** `window_topic_get` 回执；projects 是 L1，topic/summary/entries 是 L2/L3。 */
 export interface TopicGetValue {
   project_id: string
   project_source: TopicProjectSource
+  /** 本次读取所用作用域；global 时 project_id 固定为 `@global`。 */
+  topic_scope: TopicScope
   projects: TopicProjectView[]
   topic?: TopicCardView
   summary?: TopicSummaryView
@@ -979,6 +1022,8 @@ export interface TopicAppendToolInput {
   /** 幂等键：同一窗口 + kind + key 的重试命中同一 entry，不会重复落条（写入已提交但响应丢失的场景）。 */
   idempotencyKey?: string
   relatedEntryIds?: string[]
+  /** 主题作用域；缺省 project。global = 跨工作区共享主题。 */
+  topicScope?: TopicScope
 }
 
 /** `window_topic_append` 回执；从不触发 origin 回调。 */
@@ -999,7 +1044,10 @@ export interface TopicAppendValue {
 /** `window_topic_claim` 输入；base_revision 仅 acquire 必填。 */
 export interface TopicClaimToolInput {
   topicId: string
+  /** claim 的占用范围（任务/模块/文件）；与主题作用域无关。 */
   scope: string
+  /** 主题作用域；缺省 project。global = 跨工作区共享主题。 */
+  topicScope?: TopicScope
   action: TopicClaimAction
   baseRevision?: number
   runId?: string
@@ -1028,6 +1076,41 @@ export interface TopicClaimValue {
   revision: number
   /** 仅 action='takeover'：被接管的历史占用摘要。 */
   took_over?: TopicClaimHolderView
+  untrusted: true
+  note: string
+}
+
+/** `window_topic_send` 输入：把一条协作消息写进主题并投递给其他参与者。 */
+export interface TopicSendToolInput {
+  topicId: string
+  /** 非空、有界正文；不允许 NUL。 */
+  message: string
+  /** 主题作用域；缺省 project。global = 跨工作区共享主题。 */
+  topicScope?: TopicScope
+}
+
+/** 一条消息的目标窗口投递结果；不表示对方已读或已处理。 */
+export interface TopicSendTarget {
+  window_key: string
+  /** steered = 运行中插入；queued = 目标空闲排队。 */
+  mode: 'steered' | 'queued'
+}
+
+/** 一条消息的目标窗口投递失败读数。 */
+export interface TopicSendFailure {
+  window_key: string
+  reason?: string
+}
+
+/** `window_topic_send` 回执：entry 已落盘，投递逐目标如实回报。 */
+export interface TopicSendValue {
+  entry_id: string
+  topic_id: string
+  revision: number
+  delivered: TopicSendTarget[]
+  failed: TopicSendFailure[]
+  /** 超过单次广播上限而未投递的参与者数量。 */
+  skipped: number
   untrusted: true
   note: string
 }
@@ -1253,10 +1336,14 @@ export interface OpenWindowValue {
   window_key?: string
   parent_session_id?: string
   mode: WindowMode
+  /** 显式指定 `target_workspace` 时的落点读数；未指定时省略。 */
+  target_workspace?: WindowWorkspaceTarget
   run_id?: string
   /** 是否已加入项目主题台账；false 时不得声称具备协作防冲突能力。 */
   topic_tracking: boolean
   topic_id?: string
+  /** 本次 topic_id 的作用域；缺省 project。 */
+  topic_scope?: TopicScope
   /** 开窗口时读取并登记的主题 revision。 */
   topic_revision?: number
   callback_armed: boolean
@@ -1272,7 +1359,11 @@ export interface NormalizedOpenWindowInput {
   atSeq?: number
   title?: string
   seedText: string
+  /** 目标工作区查询串（id / 标题 / 绝对路径）；仅 mode=create 支持。 */
+  targetWorkspace?: string
   topicId?: string
+  /** 主题作用域；缺省 project。global 时允许跨工作区父子共用主题。 */
+  topicScope?: TopicScope
   outputSchema?: unknown
   resultRequired?: boolean
 }

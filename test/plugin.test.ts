@@ -57,7 +57,7 @@ describe('Cordis 装载', () => {
     apply(fakeHost(runtime).ctx as never, { dataRoot: root })
 
     expect(name).toBe('dsh-window')
-    expect(runtime.registered).toHaveLength(15)
+    expect(runtime.registered).toHaveLength(16)
     expect(runtime.registered.map((tool) => (tool as { name?: string }).name)).toEqual([
       'window_open',
       'window_complete',
@@ -74,8 +74,9 @@ describe('Cordis 装载', () => {
       'window_topic_get',
       'window_topic_append',
       'window_topic_claim',
+      'window_topic_send',
     ])
-    expect(runtime.logs.join('')).toContain('已注册 15 个工具')
+    expect(runtime.logs.join('')).toContain('已注册 16 个工具')
 
     // REQ §6.5：对外可注入点
     const service = runtime.provided['window'] as Record<string, unknown> | undefined

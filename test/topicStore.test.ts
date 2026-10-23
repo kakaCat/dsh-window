@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os'
 import { join, normalize, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { GLOBAL_TOPIC_PROJECT } from '../src/application/ports.js'
 import type { TopicEntryAppendInput, TopicProjectRef, TopicRef } from '../src/application/ports.js'
 import {
   entryFileName,
@@ -623,5 +624,68 @@ describe('topicStore 重启恢复（FR-11 / AC-23）', () => {
     await writeFile(join(dir, '.half.tmp'), 'half', 'utf8')
     expect(await store.cleanup()).toBe(1)
     expect(await readdir(dir)).toHaveLength(0)
+  })
+})
+
+describe('global 主题来源与 message entry（FR-22）', () => {
+  const GLOBAL_REF: TopicRef = { project: GLOBAL_TOPIC_PROJECT, topicId: 'topic-global' }
+
+  it('global 项目固定归一到 @global，且保留命名空间不允许真实项目占用', () => {
+    expect(normalizeProjectId({ projectId: 'anything', source: 'global' })).toBe('@global')
+    expect(normalizeProjectId(GLOBAL_TOPIC_PROJECT)).toBe('@global')
+    // 不论调用方传什么 projectId，global 来源都落到同一个固定哈希。
+    expect(projectHashOf({ projectId: 'x-1', source: 'global' })).toBe(projectHashOf(GLOBAL_TOPIC_PROJECT))
+    expect(topicHashOf(GLOBAL_TOPIC_PROJECT, 't-1'))
+      .not.toBe(topicHashOf({ projectId: 'ws-1', source: 'workspaceId' }, 't-1'))
+    // 真实 workspaceId / cwd 不能占用保留 ID，否则会与全局命名空间哈希碰撞。
+    expect(() => normalizeProjectId({ projectId: '@global', source: 'workspaceId' }))
+      .toThrowError(/保留命名空间/)
+  })
+
+  it('不同项目的窗口可加入同一全局主题并写入 message；重启重建后来源仍是 global', async () => {
+    const root = await tempRoot()
+    const store = makeStore(root)
+    await store.openTopic({
+      project: GLOBAL_TOPIC_PROJECT,
+      topicId: 'topic-global',
+      title: '跨工作区协作',
+      objective: '两个仓库协同',
+      createdBy: 'w-a',
+      scenario: 'continuation',
+      at: 1,
+    })
+    // 来自另一个工作区的窗口加入同一全局主题（参与者记录只记 windowKey，不绑定项目）。
+    await store.upsertParticipant({
+      project: GLOBAL_TOPIC_PROJECT,
+      topicId: 'topic-global',
+      windowKey: 'w-b',
+      scenario: 'continuation',
+      status: 'active',
+      at: 2,
+    })
+    const appended = await store.appendEntry({
+      project: GLOBAL_TOPIC_PROJECT,
+      topicId: 'topic-global',
+      windowKey: 'w-b',
+      kind: 'message',
+      content: '后端接口已就绪',
+      entryId: 'e_msg',
+      at: 3,
+    })
+    expect(appended.ok).toBe(true)
+    if (!appended.ok) throw new Error('unreachable')
+    expect(appended.value.entry.kind).toBe('message')
+
+    // 删掉 L0 索引迫使新实例从磁盘重建，验证 global 来源不会被过滤掉。
+    await rm(join(root, 'index.json'), { force: true })
+    const reopened = makeStore(root)
+    await reopened.readIndex()
+    expect(await reopened.getTopic(GLOBAL_REF)).toMatchObject({
+      projectId: '@global',
+      projectSource: 'global',
+      topicId: 'topic-global',
+    })
+    const entries = await reopened.listEntries(GLOBAL_REF, { limit: 10 })
+    expect(entries.entries.map((entry) => entry.kind)).toContain('message')
   })
 })

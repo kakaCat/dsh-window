@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { validateJsonSchemaValue, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { JsonSchemaGuard } from '../src/adapters/jsonSchemaGuard.js'
 import { FsTopicStore } from '../src/adapters/topicStore.js'
+import { GLOBAL_TOPIC_PROJECT } from '../src/application/ports.js'
 import type {
   RunControlEvent,
   RunRecord,
@@ -16,7 +17,7 @@ import type {
   WindowOpenerPort,
 } from '../src/application/ports.js'
 import { openWindow } from '../src/application/openWindow.js'
-import { topicAppend, topicClaim, topicCreate, topicGet, topicJoin } from '../src/application/topicLedger.js'
+import { topicAppend, topicClaim, topicCreate, topicGet, topicJoin, topicSend } from '../src/application/topicLedger.js'
 import { defineWindowCompleteTool } from '../src/tools/windowRunTools.js'
 import {
   defineWindowTopicAppendTool,
@@ -24,6 +25,7 @@ import {
   defineWindowTopicCreateTool,
   defineWindowTopicGetTool,
   defineWindowTopicJoinTool,
+  defineWindowTopicSendTool,
 } from '../src/tools/windowTopicTools.js'
 
 const ORIGIN = 'w-a'
@@ -114,7 +116,15 @@ function makeDelivery(): Delivery {
   const callbacks: Delivery['callbacks'] = []
   const port: SeedDeliveryPort = {
     createMessage: (params) => ({
-      message: { content: [{ type: 'text', text: params.text }], source: { kind: params.kind } },
+      message: {
+        content: [{ type: 'text', text: params.text }],
+        source: {
+          kind: params.kind,
+          ...(params.scenario === undefined ? {} : { scenario: params.scenario }),
+          ...(params.topicId === undefined ? {} : { topicId: params.topicId }),
+          ...(params.entryId === undefined ? {} : { entryId: params.entryId }),
+        },
+      },
       messageId: params.messageId ?? `message-${seeds.length + callbacks.length}`,
     }),
     deliver: async (target, message) => {
@@ -197,7 +207,7 @@ async function currentRevision(store: FsTopicStore, topicId: string): Promise<nu
 }
 
 describe('window_topic_* 回执符合 output schema', () => {
-  it('create / join / get / append / claim 五个工具', async () => {
+  it('create / join / get / append / claim / send 工具', async () => {
     const { deps, store } = await makeHarness()
     const created = await runTool(defineWindowTopicCreateTool(deps), { topic_id: 'topic-1', title: '协作主题', objective: '同一目标' }, ORIGIN)
     expect(created['created']).toBe(true)
@@ -214,6 +224,13 @@ describe('window_topic_* 回执符合 output schema', () => {
       ORIGIN,
     )
     expect(appended['kind']).toBe('progress')
+
+    const sent = await runTool(
+      defineWindowTopicSendTool(deps),
+      { topic_id: 'topic-1', message: '进度同步' },
+      ORIGIN,
+    )
+    expect(String(sent['entry_id'] ?? '')).toContain('e_')
 
     const revision = await currentRevision(store!, 'topic-1')
     const claimed = await runTool(
@@ -830,5 +847,132 @@ describe('topic 写入安全语义（§8 / 审核发现）', () => {
       exec(CHILD),
     )
     expect(mine.kind).toBe('completion')
+  })
+})
+
+/** 用一张 windowKey → workspaceId 映射替换 opener，模拟不同工作区的调用窗口。 */
+function withProjectMap(deps: WindowDeps, mapping: Record<string, string>): WindowDeps {
+  const opener = deps.windowOpener
+  if (opener === undefined) throw new Error('missing opener')
+  return {
+    ...deps,
+    windowOpener: {
+      ...opener,
+      resolveSourceProject: (windowKey: string) => ({ workspaceId: mapping[windowKey] ?? 'ws-1' }),
+    },
+  }
+}
+
+describe('全局主题与跨工作区消息（FR-22）', () => {
+  it('global 主题可被不同工作区的窗口加入并写入；项目内主题仍按项目隔离', async () => {
+    const h = await makeHarness()
+    const deps = withProjectMap(h.deps, { [ORIGIN]: 'ws-1', [PEER]: 'ws-2', [CHILD]: 'ws-3' })
+
+    const created = await topicCreate(
+      deps,
+      { topicId: 'topic-g', title: '跨区协作', objective: '同一目标', topicScope: 'global' },
+      exec(ORIGIN),
+    )
+    expect(created).toMatchObject({ project_id: '@global', project_source: 'global', topic_scope: 'global' })
+
+    const joined = await topicJoin(deps, { topicId: 'topic-g', topicScope: 'global' }, exec(PEER))
+    expect(joined.participant.window_key).toBe(PEER)
+    expect(joined.snapshot.topic_scope).toBe('global')
+
+    const appended = await topicAppend(
+      deps,
+      { topicId: 'topic-g', kind: 'progress', content: 'ws-2 进展', topicScope: 'global' },
+      exec(PEER),
+    )
+    expect(appended.kind).toBe('progress')
+
+    // 省略 topic_id 时按 global 作用域读全局 L1 清单。
+    const globalList = await topicGet(deps, { topicScope: 'global' }, exec(PEER))
+    expect(globalList.project_id).toBe('@global')
+    expect(globalList.projects[0]?.topics.map((topic) => topic.topic_id)).toContain('topic-g')
+
+    // capability 式加入：未参与的窗口不能靠 L1 清单发现全局 topic_id。
+    const strangerList = await topicGet(deps, { topicScope: 'global' }, exec(STRANGER))
+    expect(strangerList.projects[0]?.topics ?? []).toEqual([])
+
+    // 项目内主题仍是项目私有的：另一个工作区按 project scope 找不到它。
+    await topicCreate(deps, { topicId: 'topic-p', title: '项目内', objective: '同一目标' }, exec(ORIGIN))
+    await expect(topicJoin(deps, { topicId: 'topic-p' }, exec(PEER)))
+      .rejects.toMatchObject({ code: 'WINDOW_TOPIC_NOT_FOUND' })
+  })
+
+  it('window_topic_send 写 message entry，只投给其他参与者，逐目标回报', async () => {
+    const h = await makeHarness()
+    const steer = vi.fn(async (target: string, _message: unknown) => target === 'w-offline'
+      ? { delivered: false, mode: 'failed' as const, reason: '窗口不在线' }
+      : { delivered: true, mode: 'steered' as const })
+    const deps: WindowDeps = {
+      ...withProjectMap(h.deps, { [ORIGIN]: 'ws-1', [PEER]: 'ws-2', [CHILD]: 'ws-3' }),
+      agentControl: { steer, cancelTurn: async () => ({ accepted: true }) },
+    }
+    await topicCreate(deps, { topicId: 'topic-g', title: '跨区', objective: 'O', topicScope: 'global' }, exec(ORIGIN))
+    for (const key of [PEER, CHILD, 'w-offline']) {
+      await topicJoin(deps, { topicId: 'topic-g', topicScope: 'global' }, exec(key))
+    }
+
+    const sent = await topicSend(
+      deps,
+      { topicId: 'topic-g', message: '请把接口文档补上', topicScope: 'global' },
+      exec(ORIGIN),
+    )
+    expect(sent.delivered.map((item) => item.window_key).sort()).toEqual([PEER, CHILD].sort())
+    expect(sent.failed).toEqual([{ window_key: 'w-offline', reason: '窗口不在线' }])
+    expect(steer).toHaveBeenCalledTimes(3)
+
+    const payload = steer.mock.calls[0]?.[1] as {
+      content?: { text?: string }[]
+      source?: { kind?: string; topicId?: string; entryId?: string }
+    }
+    expect(payload.source?.kind).toBe('dsh-window-topic-message')
+    expect(payload.source?.topicId).toBe('topic-g')
+    expect(payload.source?.entryId).toBe(sent.entry_id)
+    expect(payload.content?.[0]?.text).toContain('请把接口文档补上')
+    expect(payload.content?.[0]?.text).toContain('不是用户新指令')
+
+    const got = await topicGet(deps, { topicId: 'topic-g', topicScope: 'global' }, exec(ORIGIN))
+    const messageEntry = got.entries?.find((entry) => entry.entry_id === sent.entry_id)
+    expect(messageEntry).toMatchObject({ kind: 'message', content: '请把接口文档补上' })
+  })
+
+  it('target_workspace + topic_scope=global：子窗跨区加入同一全局主题', async () => {
+    const h = await makeHarness()
+    const baseOpener = h.deps.windowOpener!
+    const deps: WindowDeps = {
+      ...h.deps,
+      windowOpener: {
+        ...baseOpener,
+        resolveWorkspace: () => ({
+          ok: true,
+          workspace: { id: 'ws-2', title: '后端仓库', path: '/repos/backend' },
+        }),
+      },
+    }
+    await topicCreate(deps, { topicId: 'topic-g', title: '跨区', objective: 'O', topicScope: 'global' }, exec(ORIGIN))
+    const opened = await openWindow(deps, {
+      scenario: 'branch',
+      mode: 'create',
+      seedText: '跨区干活',
+      targetWorkspace: 'ws-2',
+      topicId: 'topic-g',
+      topicScope: 'global',
+    }, exec(ORIGIN))
+
+    expect(opened.success).toBe(true)
+    expect(opened.target_workspace).toMatchObject({ id: 'ws-2' })
+    expect(opened.topic_tracking).toBe(true)
+    expect(opened.topic_scope).toBe('global')
+
+    const participants = await h.store!.listParticipants({ project: GLOBAL_TOPIC_PROJECT, topicId: 'topic-g' })
+    // 同一窗口按不同 scenario 参与会有多条记录；按 windowKey 去重后应为 origin + child。
+    expect([...new Set(participants.map((participant) => participant.windowKey))].sort()).toEqual([CHILD, ORIGIN].sort())
+
+    const seed = h.delivery.seeds.find((item) => item.target === CHILD)
+    expect(seed?.params.text).toContain('topic_scope: global')
+    expect(seed?.params.text).toContain('target_workspace: 后端仓库 (/repos/backend)')
   })
 })

@@ -54,7 +54,7 @@ import type {
   TopicStorePort,
   TopicSummary,
 } from '../application/ports.js'
-import { TOPIC_CAS_ENTRY_KINDS } from '../application/ports.js'
+import { GLOBAL_PROJECT_ID, TOPIC_CAS_ENTRY_KINDS } from '../application/ports.js'
 import type { Scenario } from '../shared/protocol.js'
 import { WindowError } from '../shared/errors.js'
 import { KeyedLock, writeJsonAtomic } from './atomicJson.js'
@@ -99,11 +99,12 @@ function hashOf(...parts: string[]): string {
   return createHash('sha256').update(parts.join('\0')).digest('hex').slice(0, HASH_LEN)
 }
 
-/** 规范项目身份：workspaceId 只 trim；cwd 走 normalize(resolve) 后再 hash。 */
+/** 规范项目身份：workspaceId 只 trim；cwd 走 normalize(resolve) 后再 hash；global 固定保留 ID。 */
 export function normalizeProjectId(project: TopicProjectRef): string {
   if (project === null || typeof project !== 'object') {
     throw new WindowError('WINDOW_INVALID_INPUT', '项目引用必须是对象')
   }
+  if (project.source === 'global') return GLOBAL_PROJECT_ID
   if (project.source !== 'workspaceId' && project.source !== 'cwd') {
     throw new WindowError('WINDOW_INVALID_INPUT', `项目来源非法（${String(project.source)}）`)
   }
@@ -111,7 +112,16 @@ export function normalizeProjectId(project: TopicProjectRef): string {
   if (raw.length === 0 || raw.includes('\0') || raw.length > MAX_ID_LENGTH * 8) {
     throw new WindowError('WINDOW_INVALID_INPUT', 'projectId 必须是非空且不含 NUL 的字符串')
   }
+  // 保留命名空间：真实 workspaceId / cwd 不得占用 @global，否则会与全局主题哈希碰撞。
+  if (raw === GLOBAL_PROJECT_ID) {
+    throw new WindowError('WINDOW_INVALID_INPUT', `projectId ${GLOBAL_PROJECT_ID} 是全局主题保留命名空间，不能作为项目 ID`)
+  }
   return project.source === 'cwd' ? normalize(resolve(raw)) : raw
+}
+
+/** 合法项目来源判定；global 只用于跨工作区共享主题。 */
+function isTopicProjectSource(value: unknown): value is TopicProjectRef['source'] {
+  return value === 'workspaceId' || value === 'cwd' || value === 'global'
 }
 
 /** `projectHash = sha256(normalizedProjectId)` 的小写十六进制前缀。 */
@@ -185,7 +195,8 @@ function validateConflictId(conflictId: unknown): string {
 }
 
 function validateKind(kind: unknown): TopicEntryKind {
-  if (kind !== 'progress' && kind !== 'decision' && kind !== 'completion' && kind !== 'conflict' && kind !== 'resolution') {
+  if (kind !== 'progress' && kind !== 'decision' && kind !== 'completion'
+    && kind !== 'conflict' && kind !== 'resolution' && kind !== 'message') {
     throw new WindowError('WINDOW_INVALID_INPUT', `entry kind 非法：${String(kind)}`)
   }
   return kind
@@ -1782,7 +1793,7 @@ export class FsTopicStore implements TopicStorePort {
     const raw = await this.readJsonLenient(join(projectDir, 'project.json'))
     if (raw !== null && typeof raw === 'object') {
       const summary = raw as ProjectSummary
-      if (typeof summary.projectId === 'string' && (summary.projectSource === 'workspaceId' || summary.projectSource === 'cwd')) {
+      if (typeof summary.projectId === 'string' && isTopicProjectSource(summary.projectSource)) {
         const ref: TopicProjectRef = { projectId: summary.projectId, source: summary.projectSource }
         if (projectHashOf(ref) === hash) return ref
       }
@@ -1791,7 +1802,7 @@ export class FsTopicStore implements TopicStorePort {
       const topicRaw = await this.readJsonLenient(join(projectDir, 'topics', topicHash, 'topic.json'))
       if (topicRaw === null || typeof topicRaw !== 'object') continue
       const topic = topicRaw as TopicRecord
-      if (typeof topic.projectId !== 'string' || (topic.projectSource !== 'workspaceId' && topic.projectSource !== 'cwd')) continue
+      if (typeof topic.projectId !== 'string' || !isTopicProjectSource(topic.projectSource)) continue
       const ref: TopicProjectRef = { projectId: topic.projectId, source: topic.projectSource }
       if (projectHashOf(ref) === hash) return ref
     }

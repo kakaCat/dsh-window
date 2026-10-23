@@ -49,7 +49,7 @@ pnpm build
 
 ## 提供的工具
 
-- `window_open`：按 scenario 开窗，投递自署来源的 seed，并做标题 / 模式 / 模型继承回执。
+- `window_open`：按 scenario 开窗，投递自署来源的 seed，并做标题 / 模式 / 模型继承回执；可选 `target_workspace` 把子窗开到另一个工作区（仅 `mode=create`）；配合 `topic_scope='global'` 可与跨区子窗共用同一全局主题。
 - `window_complete`：branch 完成后上报 `status` 与 `content`；先落结果，再回调 origin。
 - `window_status`：origin / child 只读查询 run 与 callback 状态。
 - `window_retry_callback`：origin 对已落盘但回调未确认的 run 手动重试；同一 `callbackId` 不伪造新结果。
@@ -64,6 +64,8 @@ pnpm build
 - `window_topic_get`：按 L0 → L1 → L2 → L3 金字塔读取；省略 `topic_id` 只读项目/主题摘要，提供时读 L2 与最近明细分页。
 - `window_topic_append`：追加 `progress | decision | completion | conflict | resolution`（revision CAS、candidate + conflict、supersedes/resolution 关联）；只写台账，从不触发回调。
 - `window_topic_claim`：按任务/模块/文件范围 `acquire | renew | release` 协作占用；同 scope 未过期占用冲突、过期可接管、历史保留。
+- `window_topic_send`：把一条协作消息写入主题（`kind='message'`）并投递给其他参与者；来源非 user，逐目标回报 delivered/failed，投递失败不回滚记录。
+- `window_topic_*` 均支持 `topic_scope='project'|'global'`：缺省 project；global 是跨工作区共享主题，落在保留命名空间 `@global`，知道 topic_id 的窗口可加入；全局 L1 清单只显示自己已参与的主题。
 
 ## 当前阶段边界
 
@@ -86,9 +88,11 @@ pnpm build
 - Topic Ledger（[FR-11](docs/requirements/REQ-DSH-WINDOW-001.md) / [FR-12](docs/requirements/REQ-DSH-WINDOW-001.md)）：`$DSH_HOME/storages/dsh-window` 下的分层 JSON 金字塔（L0 索引 → L1 项目摘要 → L2 主题摘要 → L3 明细 + `_journal/` 事务恢复），revision CAS、协作占用、conflict/resolution、`window_open(topic_id)` 参与登记与 branch 完成自动 completion 指针；
 - `window` Host Service（[§6.5](docs/requirements/REQ-DSH-WINDOW-001.md)）：`ctx.provide('window', ...)`，方法面覆盖全部工具用例 + `reconcile` + `stopForOrigin`，供外部插件按 `ctx.inject('window')` 可选接入；未装配时调用方按其错误码适配层降级；
 - `window_status` / `window_list` 可复盘 lifecycle 与控制留痕；`window_inspect` 留痕且只给工具名摘要；
-- 新窗口标题按任务派生（`续接：…` / `分叉：…`；显式 `title` 优先，seed 无可派生摘要时回退源标题递增），Agent 预设与模型继承同报三态，投影读数会先解包 `{ver,seq,val}` 行。
+- 新窗口标题按任务派生（`续接：…` / `分叉：…`；显式 `title` 优先，seed 无可派生摘要时回退源标题递增），Agent 预设与模型继承同报三态，投影读数会先解包 `{ver,seq,val}` 行；
+- **跨工作区父子窗口**（[FR-21](docs/requirements/REQ-DSH-WINDOW-001.md)）：`window_open(target_workspace=…)` 支持 workspace id / 标题 / 绝对路径，把 `mode=create` 的子窗建到另一个工作区；子窗建立后 `window_send` / `window_dispatch` / `window_complete` / `window_wait` 与同工作区完全一致。`fork` 会继承源会话 cwd，因此跨区只允许 `create`；未命中/歧义在开窗前响亮失败，不退回源工作区。
+- **全局主题与跨工作区消息**（[FR-22](docs/requirements/REQ-DSH-WINDOW-001.md)）：`topic_scope='global'` 让不同 workspace 的窗口加入同一主题台账；`window_topic_send` 写一条 `message` entry 并投递给其他参与者（`dsh-window-topic-message`，逐目标回报，单次上限 50）。`window_open(target_workspace=…, topic_scope='global')` 把子窗开到另一个工作区并加入同一主题；项目内主题仍按项目隔离。
 
-**边界**：本插件独立运行，不依赖也不感知任何外部业务插件。普通 `turn/end` 不会触发完成回调；主题的 `activeRuns` 只是 run_id 指针，实时状态以 run store / `window_list` 为准。
+**边界**：本插件独立运行，不依赖也不感知任何外部业务插件。普通 `turn/end` 不会触发完成回调；主题的 `activeRuns` 只是 run_id 指针，实时状态以 run store / `window_list` 为准。跨工作区协作有两条通路：① 父子窗口（origin 自己开的 child，FR-21）；② 全局主题（不同 workspace 的既有窗口按 topic_id 加入后互发消息，FR-22）。全局主题是**能力式加入**——知道 topic_id 即可加入，因此 topic_id 应按共享凭证对待；项目内主题不跨项目可见，且 `target_workspace` 仍不能与项目内 `topic_id` 组合。
 
 ## 数据路径
 
@@ -116,6 +120,8 @@ $DSH_HOME/storages/dsh-window/
 ```
 
 路径段一律是 sha256 前缀：原始 projectId / cwd / topicId / scope / 窗口 id 不作为文件路径段。
+
+全局主题（FR-22）落在 `projects/<sha256('@global')>/topics/...` 这个保留命名空间；真实 workspaceId / cwd 不得占用 `@global`，避免与全局主题哈希碰撞。
 
 未设置 `DSH_HOME` 时默认根为 `~/.dsh/storages/dsh-window`。配置项见上文「可选配置」。
 

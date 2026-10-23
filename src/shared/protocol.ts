@@ -34,6 +34,19 @@ export const RESULT_KIND = 'dsh-window-result'
 /** 运行中引导消息的自署来源；永不为 `user`。 */
 export const GUIDANCE_KIND = 'dsh-window-guidance'
 
+/** 主题协作消息的自署来源；永不为 `user`。 */
+export const TOPIC_MESSAGE_KIND = 'dsh-window-topic-message'
+
+/** 主题作用域：project = 当前项目内（缺省）；global = 跨工作区共享。 */
+export const TOPIC_SCOPES = ['project', 'global'] as const
+/** 主题作用域类型。 */
+export type TopicScope = (typeof TOPIC_SCOPES)[number]
+
+/** 判断任意输入是否是合法主题作用域。 */
+export function isTopicScope(value: unknown): value is TopicScope {
+  return typeof value === 'string' && (TOPIC_SCOPES as readonly string[]).includes(value)
+}
+
 /** 插件名，写进消息 source.plugin。 */
 export const PLUGIN_NAME = 'dsh-window'
 
@@ -72,8 +85,12 @@ export interface OpenWindowInput {
   title?: string
   /** seed 正文；两个场景都必填。 */
   seedText: string
+  /** 目标工作区（id / 标题 / 绝对路径）；提供时子窗建到该工作区，且仅支持 mode=create。 */
+  targetWorkspace?: string
   /** 多窗口协作主题；提供时参与登记与 run 绑定都走 Topic Ledger。 */
   topicId?: string
+  /** 主题作用域；缺省 project。global 时允许不同工作区的父子窗口共用一个主题。 */
+  topicScope?: TopicScope
   /** 结构化结果契约（object 根 JSON Schema 子集）；仅 branch 有意义。 */
   outputSchema?: unknown
   /** true 时必须同时给 outputSchema；completed 必须带 structured。 */

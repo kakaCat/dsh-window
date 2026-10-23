@@ -1,7 +1,7 @@
 # dsh-window 完成清单
 
-> 依据：[REQ-DSH-WINDOW-001.md](./REQ-DSH-WINDOW-001.md) 的 FR-1～FR-20 与第 13 节实施计划（B0～B6）+ B8 条款补齐 + B9 审核修复。
-> 状态基线：2026-10-16，B0～B6 + B8 已完成、B9（审核发现的缺陷与测试债）已修复。
+> 依据：[REQ-DSH-WINDOW-001.md](./REQ-DSH-WINDOW-001.md) 的 FR-1～FR-22 与第 13 节实施计划（B0～B6）+ B8 条款补齐 + B9 审核修复 + B10 跨工作区父子窗口 + B11 全局主题与跨工作区消息。
+> 状态基线：2026-10-23，B0～B6 + B8 已完成、B9（审核发现的缺陷与测试债）已修复、B10～B11 跨工作区能力已交付。
 
 ## 已完成（不用再动，回归即可）
 
@@ -95,7 +95,7 @@
 - [x] `window_status` 返回 output_schema 与 structured
 - [x] topic completion entry 只存 completionId + 有界摘要（B6 已接入；completeRun 落 completion 指针不复制 structured）
 - [x] 测试：schema 非法、必填缺失、结果不符、合法通过、status 回读、幂等不重复回调
-- [x] 附加：全部 15 个工具的回执按各自 output schema 校验通过（toolOutputs.test.ts）
+- [x] 附加：全部 16 个工具的回执按各自 output schema 校验通过（toolOutputs.test.ts）
 
 ## B5 branch 生命周期 → AC-30
 
@@ -133,12 +133,30 @@
 - [x] FR-20：窗口标题策略（显式 `title` > 任务派生 > 源标题递增 > `skipped`；跳过协议行 / 去列表符 / 折叠空白 / 36 字符截断；半角与全角编号递增；三态回报，`rename` 失败不撤销会话、不影响预设与模型）
 - [x] 测试：新增 [completionGaps.test.ts](test/completionGaps.test.ts) 覆盖以上 8 项
 
+## B10 跨工作区父子窗口（FR-21 第一阶段）
+
+- [x] `window_open(target_workspace)`：workspace id / 绝对路径 / 标题三级唯一命中；未命中 / 歧义 / 注册表缺失分别 `WINDOW_WORKSPACE_NOT_FOUND` / `AMBIGUOUS` / `UNAVAILABLE`，三者都不建窗、不投递 seed
+- [x] 仅 `mode=create`：fork（含 branch 默认 fork）与 `topic_id` 组合都在开窗前返回 `WINDOW_WORKSPACE_UNSUPPORTED`
+- [x] 回执 `target_workspace: { id, title, path? }` + seed 落点行；跨区子窗的 seed / guidance / complete / wait 复用既有 origin→child 授权，不新增任意窗口投递
+- [x] 测试：`test/crossWorkspaceTarget.test.ts`（寻址/歧义/候选/注册表缺失/create 透传）+ `test/openWindow.test.ts` 跨区用例
+- [x] 下一阶段（B11）：全局主题与跨工作区消息，已放开 `target_workspace` + `topic_scope=global` 的组合
+
+## B11 全局主题与跨工作区消息（FR-22 第二阶段）
+
+- [x] `topic_scope='project'|'global'` 贯穿 `window_topic_create/join/get/append/claim/send` 与 `window_open`；缺省 project，完全向后兼容
+- [x] 全局主题固定落在保留命名空间 `@global`，真实 workspaceId/cwd 不得占用；L0 重建保留 global 来源，删除索引后可恢复
+- [x] 不同 workspace 的窗口可加入同一全局主题并读写；项目内主题仍按项目隔离（跨项目 join 返回 `WINDOW_TOPIC_NOT_FOUND`）
+- [x] `window_topic_send`：先落 `kind='message'` entry，再向其他 active 参与者投递 `dsh-window-topic-message`；发送者排除、参与者去重、逐目标 delivered/failed、单次上限 50（超出 skipped）
+- [x] `window_topic_append` 拒绝 `kind='message'`（必须走 send，避免写进台账却没投递）
+- [x] `window_open(mode=create,target_workspace=…,topic_scope=global)` 跨区子窗与 origin 登记进同一全局主题；项目内 topic 仍拒绝与 target_workspace 组合
+- [x] 测试：`test/topicStore.test.ts`（global 归一/保留命名空间/重建/message entry）+ `test/topicTools.test.ts`（跨项目 join、send 逐目标、跨区 open、L1 全局清单）
+
 ## 收口验收（全部批次完成后）
 
-- [ ] AC-1～AC-3、AC-5～AC-30 全过（含反向探针：continuation 假回调、branch 重复回调、turn/end 假完成必须失败）
-  > dsh-window 侧 AC-1～AC-3、AC-5～AC-14、AC-16、AC-18～AC-30 已有测试覆盖；**AC-17 的反向探针已落地**（[reverseProbes.test.ts](test/reverseProbes.test.ts)：continuation 无 run 且拒绝完成、branch 同结果不重复回调/改内容被拒、seed 后保持 running 且对账不回调、已取消/孤儿 run 不能补完成）。
+- [ ] AC-1～AC-3、AC-5～AC-30、AC-32、AC-33 全过（含反向探针：continuation 假回调、branch 重复回调、turn/end 假完成必须失败）
+  > dsh-window 侧 AC-1～AC-3、AC-5～AC-14、AC-16、AC-18～AC-30、AC-32、AC-33 已有测试覆盖；**AC-17 的反向探针已落地**（[reverseProbes.test.ts](test/reverseProbes.test.ts)：continuation 无 run 且拒绝完成、branch 同结果不重复回调/改内容被拒、seed 后保持 running 且对账不回调、已取消/孤儿 run 不能补完成）。
   > 仍缺：AC-8 冷窗口 resume 的真实宿主路径需实机验证。
-- [x] `pnpm typecheck / test / build` 全绿（dsh-window：**194 测试 / 27 文件**，2026-10-17 审核修复后）
+- [x] `pnpm typecheck / test / build` 全绿（dsh-window：**220 测试 / 28 文件**，2026-10-23 跨工作区父子窗口与全局主题后）
 - [x] 依赖扫描无 `dsh-pmboard / pm-* / tool-pm`（`src/` 与 `package.json`；boundary 测试为反向探针）
 - [ ] 实机：continuation 续接不回调；branch 完成回调原窗口；冷窗口与失败重试有证据
   > **已实测（2026-10-16，真实 DSH 宿主）**：

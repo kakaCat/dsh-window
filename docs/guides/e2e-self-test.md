@@ -2,7 +2,7 @@
 
 > 目的：在真实 DSH 宿主里跑一遍 continuation / branch / 冷窗口 / 运行时控制 / Topic Ledger，
 > 补齐 fake 宿主单测覆盖不到的部分（尤其 AC-8 冷原窗口 resume）。
-> 前置：插件已装进 profile，宿主已重载，**新会话**里能看到 15 个 `window_*` 工具。
+> 前置：插件已装进 profile，宿主已重载，**新会话**里能看到 16 个 `window_*` 工具。
 
 ## 0. 前置检查
 
@@ -15,7 +15,7 @@ ls ~/.dsh/storages/dsh-window
 ```
 
 会话内自查：工具列表应包含
-`window_open / window_complete / window_status / window_retry_callback / window_dispatch / window_list / window_inspect / window_send / window_interrupt / window_wait / window_topic_create / window_topic_join / window_topic_get / window_topic_append / window_topic_claim`。
+`window_open / window_complete / window_status / window_retry_callback / window_dispatch / window_list / window_inspect / window_send / window_interrupt / window_wait / window_topic_create / window_topic_join / window_topic_get / window_topic_append / window_topic_claim / window_topic_send`。
 
 存储根（所有取证都在这）：
 
@@ -143,7 +143,27 @@ cat ~/.dsh/storages/dsh-window/audit.jsonl   # inspect 的访问留痕
 
 ---
 
-## F. 生命周期：origin 停止 / 超时 orphan / 重启对账
+## F. 跨工作区父子窗口与全局主题（FR-21 / FR-22）
+
+**操作**
+
+1. 在 workspace A 的窗口：`window_open({ scenario:'branch', mode:'create', target_workspace:'<B 的 id/标题/绝对路径>', seed_text:'…' })`；
+2. 确认子窗落在 B（侧栏分组/回执 `target_workspace`），origin 用 `window_send` 发引导、child 用 `window_complete` 完成 → 回调应回到 A；
+3. A：`window_topic_create({ topic_id:'topic-x', title:'…', objective:'…', topic_scope:'global' })`；
+4. B 的窗口：`window_topic_join({ topic_id:'topic-x', topic_scope:'global' })`；
+5. A/B 各自 `window_topic_send({ topic_id:'topic-x', topic_scope:'global', message:'…' })` → 对方会话出现 `dsh-window-topic-message` 来源消息；
+6. A：`window_open({ scenario:'branch', mode:'create', target_workspace:'<B>', topic_id:'topic-x', topic_scope:'global', seed_text:'…' })` → origin/child 都进同一全局主题。
+
+**预期**
+
+- `target_workspace` 与 fork 组合在开窗前 `WINDOW_WORKSPACE_UNSUPPORTED`；未命中/重名分别 `WINDOW_WORKSPACE_NOT_FOUND` / `AMBIGUOUS`，均不建窗；
+- 全局主题 `project_id='@global'`，不同 workspace 的窗口可读写；项目内主题对另一 workspace 仍 `WINDOW_TOPIC_NOT_FOUND`；
+- `window_topic_send` 回执逐目标给 `delivered`（steered/queued）与 `failed`，发送者不在接收列表；投递失败不回滚 `message` entry；
+- `window_topic_append({ kind:'message' })` 被拒（必须用 send）。
+
+---
+
+## G. 生命周期：origin 停止 / 超时 orphan / 重启对账
 
 **操作**
 
@@ -162,7 +182,7 @@ cat ~/.dsh/storages/dsh-window/audit.jsonl   # inspect 的访问留痕
 
 ## 通过判据
 
-- A/B/C/D/E/F 全部符合预期，且每条的磁盘取证与工具回执一致；
+- A/B/C/D/E/F/G 全部符合预期，且每条的磁盘取证与工具回执一致；
 - 反向探针（本仓单测已覆盖，实机再确认一次）：continuation 假回调、branch 重复回调、普通 turn/end 被当完成，三者都**不会**发生；
 - 任一失败：保留 `run.json` + `control.jsonl` + `messages.jsonl` + 宿主日志，按 `callback.reason` 定位。
 
@@ -170,7 +190,7 @@ cat ~/.dsh/storages/dsh-window/audit.jsonl   # inspect 的访问留痕
 
 ## 实测记录（2026-10-16，真实 DSH 宿主）
 
-装载方式：`~/.dsh/profiles/desktop` 加 `dsh-window: link:/Volumes/ORICO/doc/github/dsh/dsh-window` + `dsh.profile.bundles` 加 `dsh-window`；重启后新会话可见 15 个工具。
+装载方式：`~/.dsh/profiles/desktop` 加 `dsh-window: link:/Volumes/ORICO/doc/github/dsh/dsh-window` + `dsh.profile.bundles` 加 `dsh-window`；重启后新会话可见 16 个工具。
 
 | 用例 | 结果 | 关键证据 |
 |---|---|---|

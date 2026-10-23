@@ -157,6 +157,29 @@ describe('工具回执符合 output schema', () => {
     expect(value['success']).toBe(true)
   })
 
+  it('window_open(target_workspace) 回执带跨区落点且符合 output schema', async () => {
+    const store = new MemoryRunStore()
+    const base = opener()
+    const tool = defineWindowOpenTool(makeDeps({
+      windowOpener: {
+        ...base,
+        resolveWorkspace: () => ({
+          ok: true,
+          workspace: { id: 'ws-2', title: '后端仓库', path: '/repos/backend' },
+        }),
+      },
+      runStore: store,
+    }))
+    const value = await runTool(tool as never, {
+      scenario: 'branch',
+      mode: 'create',
+      seed_text: '跨区做事',
+      target_workspace: 'ws-2',
+    })
+    expect(value['success']).toBe(true)
+    expect(value['target_workspace']).toEqual({ id: 'ws-2', title: '后端仓库', path: '/repos/backend' })
+  })
+
   it('window_complete / window_status / window_retry_callback（含 structured 与 snake_case 回调）', async () => {
     const store = new MemoryRunStore()
     await store.create(record({ outputSchema: SCHEMA, resultRequired: true }))

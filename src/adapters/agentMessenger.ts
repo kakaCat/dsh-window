@@ -73,12 +73,16 @@ export class AgentMessenger {
   createMessage(params: {
     text: string
     kind: string
-    scenario: Scenario
+    /** seed / 回调场景必给；主题协作消息没有 run 与业务场景，可省略。 */
+    scenario?: Scenario
     runId?: string
     messageId?: string
     /** 回调对账所需的来源读数（FR-7）；只在有值时写入 source。 */
     childSessionId?: string
     callbackId?: string
+    /** FR-22：主题协作消息的来源读数；只写 ID，不写正文。 */
+    topicId?: string
+    entryId?: string
   }): { message: unknown; messageId: string } {
     if (params.kind === 'user') {
       throw new Error('dsh-window 拒绝以 user 作为 source.kind：自署消息不能伪装成用户发言')
@@ -93,10 +97,12 @@ export class AgentMessenger {
         source: {
           kind: params.kind,
           plugin: PLUGIN_NAME,
-          scenario: params.scenario,
+          ...(params.scenario === undefined ? {} : { scenario: params.scenario }),
           ...(params.runId === undefined ? {} : { runId: params.runId }),
           ...(params.childSessionId === undefined ? {} : { childSessionId: params.childSessionId }),
           ...(params.callbackId === undefined ? {} : { callbackId: params.callbackId }),
+          ...(params.topicId === undefined ? {} : { topicId: params.topicId }),
+          ...(params.entryId === undefined ? {} : { entryId: params.entryId }),
         },
       },
     }

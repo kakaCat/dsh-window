@@ -6,12 +6,15 @@
  *
  * @module dsh-window/adapters/sessionWindowOpener
  */
+import { isAbsolute, resolve as resolvePath } from 'node:path'
 import type {
   OpenWindowOutcome,
   WindowCreateOptions,
   WindowModelSelection,
   WindowOpenerPort,
   WindowSourceProfile,
+  WindowWorkspaceResolution,
+  WindowWorkspaceTarget,
 } from '../application/ports.js'
 import { windowProfileFromProjectionValues } from '../application/windowInherit.js'
 
@@ -34,6 +37,8 @@ interface WorkspaceRegistryLike {
 
 interface ProjectRow {
   id: string
+  title?: string
+  path?: string
   sessionIds: readonly string[]
 }
 
@@ -47,22 +52,54 @@ function reasonOf(error: unknown): string {
   return String(error)
 }
 
-/** 注册表行归一：id 支持 string / number；sessionIds 只收字符串。 */
+/** 注册表行归一：id 支持 string / number；title/path 只收非空字符串；sessionIds 只收字符串。 */
 function toProjectRows(rows: readonly unknown[]): ProjectRow[] {
   const out: ProjectRow[] = []
   for (const row of rows) {
     if (row === null || typeof row !== 'object') continue
-    const value = row as { id?: unknown; sessionIds?: unknown }
+    const value = row as { id?: unknown; title?: unknown; path?: unknown; sessionIds?: unknown }
     const id = typeof value.id === 'string' && value.id.length > 0
       ? value.id
       : (typeof value.id === 'number' && Number.isFinite(value.id) ? String(value.id) : undefined)
     if (id === undefined) continue
+    const title = typeof value.title === 'string' && value.title.trim().length > 0
+      ? value.title.trim()
+      : undefined
+    const path = typeof value.path === 'string' && value.path.trim().length > 0
+      ? value.path.trim()
+      : undefined
     const sessionIds = Array.isArray(value.sessionIds)
       ? value.sessionIds.filter((item): item is string => typeof item === 'string' && item.length > 0)
       : []
-    out.push({ id, sessionIds })
+    out.push({
+      id,
+      ...(title === undefined ? {} : { title }),
+      ...(path === undefined ? {} : { path }),
+      sessionIds,
+    })
   }
   return out
+}
+
+/** 只投影可寻址信息；会话清单不随工作区解析回执外泄。 */
+function workspaceTargetOf(row: ProjectRow): WindowWorkspaceTarget {
+  return {
+    id: row.id,
+    title: row.title ?? row.id,
+    ...(row.path === undefined ? {} : { path: row.path }),
+  }
+}
+
+/** 候选列表有界；只用于让调用方改口，不承担枚举职责。 */
+function workspaceCandidates(rows: readonly ProjectRow[]): WindowWorkspaceTarget[] {
+  return rows.slice(0, 10).map(workspaceTargetOf)
+}
+
+/** 路径归一：只接受绝对路径；相对串留给标题匹配，避免把「other-repo」误解析到宿主 cwd。 */
+function canonicalPathOf(value: string): string | undefined {
+  const trimmed = value.trim()
+  if (trimmed.length === 0 || !isAbsolute(trimmed)) return undefined
+  return resolvePath(trimmed)
 }
 
 /** 组织宿主建会话请求：workspaceId 优先，cwd 兜底，二者互斥；agentPreset 正交。 */
@@ -198,6 +235,64 @@ export class SessionWindowOpener implements WindowOpenerPort {
       if (found !== row.id) return undefined
     }
     return found === undefined ? undefined : { workspaceId: found }
+  }
+
+  /**
+   * 解析显式目标工作区：精确 id → 绝对路径 → 标题；每级都要求唯一命中。
+   * 未命中时返回有界候选（只有 id/title/path），让调用方能改口而不是瞎猜。
+   */
+  resolveWorkspace(query: string): WindowWorkspaceResolution {
+    const registry = this.registry()
+    if (registry === undefined || typeof registry.list !== 'function') {
+      return {
+        ok: false,
+        code: 'unavailable',
+        reason: 'workspaceRegistry.list 不可用（服务未装配或本宿主无此能力）',
+      }
+    }
+    let rows: unknown
+    try {
+      rows = registry.list()
+    } catch (error: unknown) {
+      return { ok: false, code: 'unavailable', reason: `workspaceRegistry.list 读取失败：${reasonOf(error)}` }
+    }
+    if (!Array.isArray(rows)) {
+      return { ok: false, code: 'unavailable', reason: 'workspaceRegistry.list 未返回数组' }
+    }
+    const projects = toProjectRows(rows)
+    const trimmed = query.trim()
+
+    const ambiguous = (matches: ProjectRow[], level: string): WindowWorkspaceResolution => {
+      const candidates = workspaceCandidates(matches)
+      return {
+        ok: false,
+        code: 'ambiguous',
+        reason: `工作区查询「${trimmed}」按${level}命中 ${matches.length} 个（${candidates.map((item) => item.title).join(' / ')}），请改用 workspace id 或绝对路径`,
+        candidates,
+      }
+    }
+
+    const byId = projects.filter((row) => row.id === trimmed)
+    if (byId.length === 1) return { ok: true, workspace: workspaceTargetOf(byId[0]!) }
+    if (byId.length > 1) return ambiguous(byId, ' id ')
+
+    const canonical = canonicalPathOf(trimmed)
+    if (canonical !== undefined) {
+      const byPath = projects.filter((row) => row.path !== undefined && canonicalPathOf(row.path) === canonical)
+      if (byPath.length === 1) return { ok: true, workspace: workspaceTargetOf(byPath[0]!) }
+      if (byPath.length > 1) return ambiguous(byPath, '绝对路径')
+    }
+
+    const byTitle = projects.filter((row) => (row.title ?? '') === trimmed)
+    if (byTitle.length === 1) return { ok: true, workspace: workspaceTargetOf(byTitle[0]!) }
+    if (byTitle.length > 1) return ambiguous(byTitle, '标题')
+
+    return {
+      ok: false,
+      code: 'not_found',
+      reason: `没有匹配的工作区：${trimmed}`,
+      candidates: workspaceCandidates(projects),
+    }
   }
 
   /** 子会话 id 必须是非空字符串且不等于源，否则开窗结果不可信。 */

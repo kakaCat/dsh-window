@@ -3,7 +3,7 @@
  *
  * 已交付：continuation / branch 双场景开窗、branch 完成回调、运行时控制
  * （list/inspect/dispatch/send/interrupt/wait）、结构化结果、生命周期对账
- * （stop/orphan/drain/reconcile）、Topic Ledger，共 15 个 `window_*` 工具，
+ * （stop/orphan/drain/reconcile）、Topic Ledger，共 16 个 `window_*` 工具，
  * 并通过 `ctx.provide('window', ...)` 暴露 Host Service。
  * 装载后排队执行启动对账；卸载排空用 `ctx.effect` 注册（Cordis 没有 ready/dispose 公共事件）。
  *
@@ -34,6 +34,7 @@ import {
   defineWindowTopicCreateTool,
   defineWindowTopicGetTool,
   defineWindowTopicJoinTool,
+  defineWindowTopicSendTool,
 } from './tools/windowTopicTools.js'
 import { defineWindowWaitTool } from './tools/windowWaitTool.js'
 import { drainLifecycle, reconcileRuns } from './application/lifecycle.js'
@@ -211,11 +212,12 @@ export function apply(ctx: Context, config: Config = {}): void {
       defineWindowTopicGetTool(deps),
       defineWindowTopicAppendTool(deps),
       defineWindowTopicClaimTool(deps),
+      defineWindowTopicSendTool(deps),
     ]
     for (const tool of registered) tools.register(tool)
     logger?.info?.(`已注册 ${registered.length} 个工具：window_open / window_complete / window_status / window_retry_callback`
       + ` / window_dispatch / window_list / window_inspect / window_send / window_interrupt / window_wait`
-      + ` / window_topic_create / window_topic_join / window_topic_get / window_topic_append / window_topic_claim`
+      + ` / window_topic_create / window_topic_join / window_topic_get / window_topic_append / window_topic_claim / window_topic_send`
       + `（数据根：${resolved.dataRoot ?? '默认 $DSH_HOME/storages/dsh-window'}）`)
   })
 
@@ -266,7 +268,10 @@ export {
   topicCreate,
   topicGet,
   topicJoin,
+  topicSend,
   resolveTopicProject,
+  resolveTopicProjectByScope,
+  normalizeTopicScope,
   relevantUnresolvedConflicts,
 } from './application/topicLedger.js'
 export { WindowError, reject } from './shared/errors.js'

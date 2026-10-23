@@ -10,6 +10,7 @@ import type {
   WindowModelSelection,
   WindowOpenerPort,
   WindowSourceProfile,
+  WindowWorkspaceResolution,
 } from '../src/application/ports.js'
 import { WindowError } from '../src/shared/errors.js'
 
@@ -22,6 +23,7 @@ interface OpenerOptions {
   createOutcome?: OpenWindowOutcome
   profile?: WindowSourceProfile
   registryProject?: WindowCreateOptions
+  workspace?: WindowWorkspaceResolution
   failRename?: boolean
 }
 
@@ -32,6 +34,7 @@ function makeOpener(options: OpenerOptions = {}): {
     create: (WindowCreateOptions | undefined)[]
     rename: { id: string; title: string }[]
     selectModel: { id: string; selection: WindowModelSelection }[]
+    workspaceQueries: string[]
   }
 } {
   const calls = {
@@ -39,6 +42,7 @@ function makeOpener(options: OpenerOptions = {}): {
     create: [] as (WindowCreateOptions | undefined)[],
     rename: [] as { id: string; title: string }[],
     selectModel: [] as { id: string; selection: WindowModelSelection }[],
+    workspaceQueries: [] as string[],
   }
   const opener: WindowOpenerPort = {
     available: () => options.available ?? true,
@@ -62,14 +66,21 @@ function makeOpener(options: OpenerOptions = {}): {
   if (options.registryProject !== undefined) {
     opener.resolveSourceProject = () => options.registryProject
   }
+  if (options.workspace !== undefined) {
+    const resolution = options.workspace
+    opener.resolveWorkspace = (query) => {
+      calls.workspaceQueries.push(query)
+      return resolution
+    }
+  }
   return { opener, calls }
 }
 
 function makeDelivery(options: { delivered?: boolean; reason?: string } = {}): {
   port: SeedDeliveryPort
-  seeds: { params: { text: string; kind: string; scenario: string; runId?: string }; message: unknown }[]
+  seeds: { params: { text: string; kind: string; scenario?: string; runId?: string }; message: unknown }[]
 } {
-  const seeds: { params: { text: string; kind: string; scenario: string; runId?: string }; message: unknown }[] = []
+  const seeds: { params: { text: string; kind: string; scenario?: string; runId?: string }; message: unknown }[] = []
   const port: SeedDeliveryPort = {
     createMessage: (params) => {
       const message = {
@@ -354,5 +365,158 @@ describe('继承失败不改变开窗成败', () => {
     expect(value.success).toBe(true)
     expect(value.inheritance.title).toBe('failed')
     expect(value.inheritance.reasons.join('')).toContain('标题')
+  })
+})
+
+describe('跨工作区开窗（target_workspace）', () => {
+  const TARGET = { id: 'ws-2', title: '后端仓库', path: '/repos/backend' }
+  const RESOLVED: WindowWorkspaceResolution = { ok: true, workspace: TARGET }
+
+  it('continuation + target_workspace 把子窗建到目标工作区，并在 seed 里写明落点', async () => {
+    const { opener, calls } = makeOpener({
+      registryProject: { workspaceId: 'ws-1' },
+      workspace: RESOLVED,
+    })
+    const { port, seeds } = makeDelivery()
+    const deps = makeDeps({ opener, delivery: port })
+
+    const value = await openWindow(
+      deps,
+      { scenario: 'continuation', seedText: '跨区干活', targetWorkspace: '/repos/backend' },
+      EXEC,
+    )
+
+    expect(value.success).toBe(true)
+    expect(value.target_workspace).toEqual(TARGET)
+    expect(calls.workspaceQueries).toEqual(['/repos/backend'])
+    expect(calls.create).toHaveLength(1)
+    expect(calls.create[0]).toMatchObject({ workspaceId: 'ws-2' })
+    expect(calls.fork).toHaveLength(0)
+    const text = String((seeds[0]?.message as { content?: { text?: string }[] }).content?.[0]?.text)
+    expect(text).toContain('target_workspace: 后端仓库 (/repos/backend)')
+  })
+
+  it('branch + mode=create 跨区仍落 run、武装回调，且 child 就是跨区会话', async () => {
+    const { opener, calls } = makeOpener({
+      registryProject: { workspaceId: 'ws-1' },
+      workspace: RESOLVED,
+    })
+    const { port } = makeDelivery()
+    const store = new MemoryRunStore()
+    const deps = makeDeps({ opener, delivery: port, runStore: store })
+
+    const value = await openWindow(
+      deps,
+      { scenario: 'branch', mode: 'create', seedText: '跨区分支', targetWorkspace: '后端仓库' },
+      EXEC,
+    )
+
+    expect(value).toMatchObject({
+      success: true,
+      scenario: 'branch',
+      mode: 'create',
+      run_id: 'run-1',
+      callback_armed: true,
+    })
+    expect(value.target_workspace).toEqual(TARGET)
+    expect(calls.create[0]).toMatchObject({ workspaceId: 'ws-2' })
+    expect(await store.get('run-1')).toMatchObject({
+      childSessionId: 'session-child',
+      status: 'running',
+      callbackArmed: true,
+    })
+  })
+
+  it('branch 默认 fork 与 target_workspace 组合被拒，且不建窗', async () => {
+    const { opener, calls } = makeOpener({ registryProject: { workspaceId: 'ws-1' }, workspace: RESOLVED })
+    const { port } = makeDelivery()
+    const deps = makeDeps({ opener, delivery: port, runStore: new MemoryRunStore() })
+
+    await expect(openWindow(deps, { scenario: 'branch', seedText: 'x', targetWorkspace: 'ws-2' }, EXEC))
+      .rejects.toMatchObject({ code: 'WINDOW_WORKSPACE_UNSUPPORTED' })
+
+    expect(calls.fork).toHaveLength(0)
+    expect(calls.create).toHaveLength(0)
+  })
+
+  it('目标工作区不存在时响亮失败并给候选，不退回源工作区', async () => {
+    const { opener, calls } = makeOpener({
+      registryProject: { workspaceId: 'ws-1' },
+      workspace: {
+        ok: false,
+        code: 'not_found',
+        reason: '没有匹配的工作区：ghost',
+        candidates: [TARGET],
+      },
+    })
+    const { port } = makeDelivery()
+    const deps = makeDeps({ opener, delivery: port })
+
+    const error = await openWindow(
+      deps,
+      { scenario: 'continuation', seedText: 'x', targetWorkspace: 'ghost' },
+      EXEC,
+    ).catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(WindowError)
+    expect((error as WindowError).code).toBe('WINDOW_WORKSPACE_NOT_FOUND')
+    expect((error as WindowError).message).toContain('后端仓库')
+    expect(calls.create).toHaveLength(0)
+    expect(calls.fork).toHaveLength(0)
+  })
+
+  it('目标工作区命中多个时拒绝，不猜一个', async () => {
+    const { opener, calls } = makeOpener({
+      registryProject: { workspaceId: 'ws-1' },
+      workspace: {
+        ok: false,
+        code: 'ambiguous',
+        reason: '工作区查询「后端」按标题命中 2 个',
+        candidates: [TARGET, { id: 'ws-3', title: '后端仓库', path: '/repos/backend-copy' }],
+      },
+    })
+    const { port } = makeDelivery()
+    const deps = makeDeps({ opener, delivery: port })
+
+    await expect(openWindow(
+      deps,
+      { scenario: 'continuation', seedText: 'x', targetWorkspace: '后端' },
+      EXEC,
+    )).rejects.toMatchObject({ code: 'WINDOW_WORKSPACE_AMBIGUOUS' })
+    expect(calls.create).toHaveLength(0)
+  })
+
+  it('宿主没有工作区解析能力时 WINDOW_WORKSPACE_UNAVAILABLE', async () => {
+    const { opener, calls } = makeOpener({ registryProject: { workspaceId: 'ws-1' } })
+    const { port } = makeDelivery()
+    const deps = makeDeps({ opener, delivery: port })
+
+    await expect(openWindow(
+      deps,
+      { scenario: 'continuation', seedText: 'x', targetWorkspace: 'ws-2' },
+      EXEC,
+    )).rejects.toMatchObject({ code: 'WINDOW_WORKSPACE_UNAVAILABLE' })
+    expect(calls.create).toHaveLength(0)
+  })
+
+  it('target_workspace 与 topic_id 暂不能组合，在建窗与主题读写前拒绝', async () => {
+    const { opener, calls } = makeOpener({ registryProject: { workspaceId: 'ws-1' }, workspace: RESOLVED })
+    const { port } = makeDelivery()
+    const deps = makeDeps({ opener, delivery: port, runStore: new MemoryRunStore() })
+
+    await expect(openWindow(
+      deps,
+      { scenario: 'branch', mode: 'create', seedText: 'x', targetWorkspace: 'ws-2', topicId: 'topic-1' },
+      EXEC,
+    )).rejects.toMatchObject({ code: 'WINDOW_WORKSPACE_UNSUPPORTED' })
+    expect(calls.create).toHaveLength(0)
+  })
+
+  it('target_workspace 为纯空白在归一阶段拒绝', () => {
+    expect(() => normalizeOpenWindowInput({
+      scenario: 'continuation',
+      seedText: 'x',
+      targetWorkspace: '   ',
+    })).toThrowError(WindowError)
   })
 })

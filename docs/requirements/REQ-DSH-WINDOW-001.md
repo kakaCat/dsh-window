@@ -3,7 +3,7 @@ req_id: REQ-DSH-WINDOW-001
 title: dsh-window 独立插件：双场景、Topic Ledger 与 branch 运行时调度
 status: draft
 created_at: 2026-10-16
-updated_at: 2026-10-16
+updated_at: 2026-10-23
 sides: backend
 ---
 
@@ -255,7 +255,7 @@ scenario: 'continuation' | 'branch'
 两个场景共用以下能力：
 
 - `mode='fork'|'create'`、`at_seq`、`title`、`seed_text`；
-- create 落点按 `workspaceId` 优先、`cwd` 兜底；两者均不可得时响亮失败，不落到宿主进程目录；
+- create 落点按 `workspaceId` 优先、`cwd` 兜底；两者均不可得时响亮失败，不落到宿主进程目录；显式 `target_workspace` 见 **FR-21**（只允许 `mode=create`）；
 - **标题策略**：显式 `title` 优先；未给时按任务派生 `续接：<seed 首条有效内容>` / `分叉：<seed 首条有效内容>`，再回退源标题递增，三者都没有才 `skipped`。完整判定、派生规则与失败语义见 **FR-20**，不得在别处再写一套标题判定；
 - 标题、Agent 预设、模型分别以 `set/skipped/failed` 回报，继承失败不撤销已创建会话；投影读数是 `{ver,seq,val}` 行时必须先解包 `val` 再判定缺失；
 - 返回真实 `window_key`，且不得等于源会话；
@@ -448,6 +448,32 @@ scenario: 'continuation' | 'branch'
 
 **为什么不能只依赖源标题递增**（防止回退成旧策略的可核验理由）：`fork` 会继承父会话历史，宿主按「首条用户消息」自动命名，同一源派出的两个 branch 窗口会得到完全相同的标题，用户在侧栏无法区分。因此派生必须使用各窗口自己的 `seed_text`，源标题递增只作最后兜底。
 
+### FR-21：跨工作区父子窗口（P1，第一阶段）
+
+目标：origin 能把子窗建到**另一个 workspace**，随后父子的 seed / guidance / 完成回调 / 等待全部照常跨工作区工作。传输层本来就是全局的（`agents.get` / `sessionController.resolveAgent` 按 session id 寻址），本阶段只补**开窗落点与寻址**，不新增窗口间授权模型。
+
+- `window_open` 增加可选 `target_workspace`，接受 workspace id、标题或规范化后的绝对路径；解析优先级为 **id → 绝对路径 → 标题**，每一级都要求唯一命中；
+- **只允许 `mode=create`**：`fork` 由宿主继承源会话 cwd，不能换工作区；`target_workspace` 与默认 fork 组合（例如 branch 未显式传 mode）在开窗前返回 `WINDOW_WORKSPACE_UNSUPPORTED`；
+- 目标工作区未命中返回 `WINDOW_WORKSPACE_NOT_FOUND`（附有界候选：仅 id/title/path，不含会话清单）；同一级命中多个返回 `WINDOW_WORKSPACE_AMBIGUOUS`；`workspaceRegistry` 不可用返回 `WINDOW_WORKSPACE_UNAVAILABLE`。三者都**不建窗、不投递 seed**，不得静默退回源工作区；
+- 成功回执增加 `target_workspace: { id, title, path? }`，如实报告实际落点；seed 头部增加一行 `target_workspace: <title> (<path>)`，不宣称与 origin 共享 cwd；
+- 子窗建立后，`window_send` / `window_dispatch` / `window_complete` / `window_wait` / `window_list` / `window_status` 的授权与行为与同工作区完全一致；`window_dispatch` 不创建会话，派给已有 child 时自动沿用它的工作区，不新增 `target_workspace` 参数；
+- `target_workspace` 与**项目内** `topic_id` 不能组合（同工作区请省略 `target_workspace`），组合时在主题读写前返回 `WINDOW_WORKSPACE_UNSUPPORTED`；与 `topic_scope=global` 的组合由 FR-22 放开；
+- 本阶段不提供“给任意既有窗口发消息”的新工具：消息只能沿 origin→child 的既有委派关系流动，避免把提示注入面扩大到任意窗口。
+
+### FR-22：全局主题与跨工作区消息（P1，第二阶段）
+
+目标：不同 workspace 的窗口可以加入同一个主题台账，并通过主题消息互相投递；既有 origin→child 授权模型保持不变。
+
+- Topic 增加作用域 `topic_scope='project'|'global'`，缺省 `project`（完全向后兼容）；全局主题落在保留项目命名空间 `@global`，与真实 workspaceId/cwd 的哈希命名空间隔离，真实项目不得占用 `@global`；
+- `window_topic_create / join / get / append / claim / send` 都接受 `topic_scope`；`window_open` 接受 `topic_scope`，且只有 `global` 能与 `target_workspace` 组合（子窗建到另一个工作区并加入同一全局主题）；
+- 全局主题采用**能力式加入**：知道 topic_id 的窗口可以把自己加入；加入后按参与者授权读写。项目内主题仍按项目寻址，跨项目不可见；
+- 全局 L1 清单只列出调用窗口已参与的主题（汇总计数按可见子集重算），不把全量 topic_id 变成可发现目录；
+- 新增 `window_topic_send`：先追加 `kind='message'` entry，再向其他 `status != left` 参与者投递自署消息（`source.kind='dsh-window-topic-message'`，携带 `topicId`/`entryId`，永不为 `user`）；发送者排除，单次最多 50 个目标，超出计入 `skipped`；
+- 投递逐目标回报 `delivered`（steered/queued）与 `failed`；投递失败不回滚 entry，也不得声称对方已读或已处理；没有 `agentControl` 时退化为 followup 投递；
+- `window_topic_append` 不接受 `kind='message'`：消息必须走 `window_topic_send`，避免“写进台账却没投递”的假消息；
+- 主题消息与主题内容一样按不可信协作数据处理：不得冒充用户指令或人工批准，不触发 run 回调；
+- 项目内主题的存储布局、revision/claim/conflict 语义不变；全局主题不迁移既有项目主题，不把项目主题静默变成全局。
+
 ---
 
 ## 6. 对外接口要求
@@ -463,7 +489,9 @@ scenario: 'continuation' | 'branch'
 | `at_seq` | `number` | 否 | 仅 fork，切点事件序号（含） |
 | `title` | `string` | 否 | 新会话标题；显式值优先。缺省按 FR-20 的顺序判定：显式 title > 任务派生 > 源标题递增 > `skipped` |
 | `seed_text` | `string` | 是 | continuation 为断点底稿；branch 为独立任务包与完成要求 |
+| `target_workspace` | `string` | 否 | 目标工作区（workspace id / 标题 / 绝对路径）；提供时子窗建到该工作区，且仅允许 `mode=create`；与项目内 `topic_id` 不能组合，与 `topic_scope=global` 可以组合（FR-21 / FR-22） |
 | `topic_id` | `string` | 否 | 多窗口协作时必填；同一项目任务必须共用，缺席则不启用主题跟踪 |
+| `topic_scope` | `'project' \| 'global'` | 否 | 缺省 project；global 使用跨工作区共享主题，可与 `target_workspace` 组合（FR-22） |
 | `output_schema` | `object` | 否 | 结构化结果契约；object 根、允许的 JSON Schema 子集 |
 | `result_required` | `boolean` | 否 | 默认 false；true 时 completed 必须带通过校验的 structured |
 
@@ -477,9 +505,11 @@ scenario: 'continuation' | 'branch'
   window_key?: string              //  会话已创建时即使后续失败也要返回
   parent_session_id?: string
   mode: 'fork' | 'create'
+  target_workspace?: { id: string; title: string; path?: string }  // 显式指定目标工作区时的实际落点
   run_id?: string                  //  仅 branch
   topic_tracking: boolean          //  是否已加入项目主题台账
   topic_id?: string
+  topic_scope?: 'project' | 'global'  // 本次 topic_id 的作用域
   topic_revision?: number          //  开窗口时读取的主题版本
   callback_armed: boolean          //  continuation 恒 false；branch 成功时恒 true
   delivery?: { delivered: boolean; kind: string; reason?: string; run_error?: string; topic_note?: string }
@@ -557,6 +587,7 @@ scenario: 'continuation' | 'branch'
 - `get(...)` / `retryCallback(...)`：查询和恢复；
 - `list(...)` / `inspect(...)` / `dispatch(...)` / `send(...)` / `interrupt(...)` / `wait(...)`：与对应工具同用例，供宿主做运行时调度；
 - `topicCreate/join/get/append/claim(...)`：与主题工具同用例，供调用方把稳定业务 ID 映射为 topic，并同步协作摘要；
+- `topicSend(...)`：与 `window_topic_send` 同用例，供宿主把协作消息写入主题并投递给其他参与者；
 - 生命周期对账 `reconcile(...)`：宿主启动/归档时恢复 run、处理 orphan 与未完成 callback；
 - 自署消息投递可复用内部 messenger，但不得暴露成允许模型任意投递的工具。
 
@@ -567,12 +598,13 @@ scenario: 'continuation' | 'branch'
 | `topic_id` | `string` | 否 | 指定稳定业务 ID；缺省由插件生成。调用方可传稳定业务 ID 的命名空间形式 |
 | `title` | `string` | 是 | 项目主题名称 |
 | `objective` | `string` | 是 | 共同目标与完成边界，不能只写空泛标题 |
+| `topic_scope` | `'project' \| 'global'` | 否 | 缺省 project；global 创建跨工作区共享主题（FR-22） |
 
-返回 `project_id`、`topic_id`、`revision`、创建者与参与者。相同 ID 的重复创建仅在目标一致时幂等；目标不同返回冲突，不得覆盖原主题。
+返回 `project_id`、`project_source`、`topic_scope`、`topic_id`、`revision`、创建者与参与者。相同 ID 的重复创建仅在目标一致时幂等；目标不同返回冲突，不得覆盖原主题。
 
 ### 6.7 `window_topic_get`
 
-入参 `{ topic_id?, cursor?, limit? }`：
+入参 `{ topic_id?, cursor?, limit?, topic_scope? }`（topic_scope 缺省 project；global 时 `project_id` 固定为 `@global`，且省略 topic_id 时只列出调用窗口已参与的全局主题）：
 
 - 省略 `topic_id`：读取 L0/L1，返回当前项目的 topic 列表、目标、活动 run 指针、未解决冲突数、最近完成时间和明细 entry 指针；活动 run 的实时状态用 `window_list` / `window_status` 读取，不由主题摘要反推；
 - 提供 `topic_id`：读取 L2，返回主题目标、参与窗口、有效决策、活动占用、最近 completion、unresolved conflict 及指向 L3 的 entry id；
@@ -591,12 +623,13 @@ scenario: 'continuation' | 'branch'
 | `supersedes_entry_id` | `string` | 否 | 本记录替代的旧记录；与 `supersedes_reason` 同时必填 |
 | `supersedes_reason` | `string` | 条件必填 | 替代旧决策或旧完成的理由 |
 | `conflict_id` | `string` | 条件必填 | `kind='resolution'` 时必填，指定正在解决的冲突 |
+| `topic_scope` | `'project' \| 'global'` | 否 | 缺省 project；global = 跨工作区共享主题 |
 
-返回 `entry_id` 和写入后的 revision；若新结论与有效决策冲突，则同时返回 `candidate_entry_id`、`conflict_id` 和 `effective=false`，该返回不代表冲突已解决。**该工具本身从不触发 origin 回调**；branch 需要回调时必须走 `window_complete`。
+`kind` 不接受 `message`：协作消息必须走 `window_topic_send`（append 不投递）。返回 `entry_id` 和写入后的 revision；若新结论与有效决策冲突，则同时返回 `candidate_entry_id`、`conflict_id` 和 `effective=false`，该返回不代表冲突已解决。**该工具本身从不触发 origin 回调**；branch 需要回调时必须走 `window_complete`。
 
 ### 6.9 `window_topic_claim`
 
-入参 `{ topic_id, scope, action: 'acquire'|'renew'|'release', base_revision?, run_id?, lease_ms? }`：
+入参 `{ topic_id, scope, action: 'acquire'|'renew'|'release', base_revision?, run_id?, lease_ms?, topic_scope? }`（`scope` 是占用范围，不是主题作用域；topic_scope 缺省 project）：
 
 - `base_revision` 仅 acquire 必填；renew/release 只更新当前窗口自己的占用，不接受以旧快照覆盖他人占用；
 - `scope` 是任务、模块或文件范围的稳定字符串；acquire/renew/release 只能操作当前窗口自己的占用；
@@ -606,12 +639,24 @@ scenario: 'continuation' | 'branch'
 
 ### 6.10 `window_topic_join`
 
-入参 `{ topic_id, scenario?: 'continuation'|'branch' }`：
+入参 `{ topic_id, scenario?: 'continuation'|'branch', topic_scope?: 'project'|'global' }`：
 
 - 只允许当前窗口把自己加入主题；不得代其他窗口加入或修改其角色；
 - 成功后返回当前窗口 participant 记录及一份 `window_topic_get` 同构快照，供后续 `base_revision` 使用；
 - 重复加入仅在同一 scenario 下幂等；以另一 scenario 参与时新增 participation，不能覆盖或改写首次参与记录；
 - `window_open` 的 origin/child 参与登记必须复用本用例，不能另写一套加入规则。
+- 全局主题（topic_scope=global）采用能力式加入：知道 topic_id 的窗口可以把自己加入；项目内主题仍按项目寻址。
+
+### 6.10.1 `window_topic_send`
+
+入参 `{ topic_id, message, topic_scope?: 'project'|'global' }`：
+
+- 消息先以 `kind='message'` 追加进主题，再投递给 `status != left` 的其他参与者；发送者自己排除；
+- 返回 `{ entry_id, topic_id, revision, delivered: {window_key, mode}[], failed: {window_key, reason?}[], skipped }`；
+- `delivered` 只表示目标 agent 已接受/排队，不表示已读或已处理；投递失败不回滚已落盘的 entry；
+- 单次广播最多 50 个参与者，超出部分计入 `skipped`，不静默丢弃也不无限扇出；
+- 消息来源 `source.kind='dsh-window-topic-message'`，携带 `topicId` / `entryId`，永不为 `user`；
+- 跨工作区主题必须显式 `topic_scope=global`。
 
 ### 6.11 `window_list`
 
@@ -791,6 +836,7 @@ ctx.provide('window', {
 - Topic Ledger 使用一个固定的插件根：`dshHomePath('storages', 'dsh-window')`，默认展开为 `~/.dsh/storages/dsh-window`；设置 `DSH_HOME` 时对应为 `$DSH_HOME/storages/dsh-window`。
 - 根目录和目录权限由插件创建并限制为仅当前用户可读写（目录 `0700`、记录文件 `0600`）；临时文件只能出现在根内隐藏目录，不能写到 `/tmp` 后丢失归属。
 - 不把 Topic 数据写到项目仓库下的 `.dsh/`、`.dsh-window/` 或当前 cwd：协作元数据不是交付物，不能误进 Git，也不能因同一项目有多个 checkout 而分裂。真正的代码、文档和报告仍留在项目工作区，Topic 只保存它们的引用。
+- 全局主题（FR-22）落在 `projects/<sha256("@global")>/topics/...` 保留命名空间；真实 workspaceId/cwd 不得等于 `@global`，避免与全局主题哈希碰撞。
 - profile 隔离由 `DSH_HOME` 的部署方式决定；多个 profile 共享同一 `DSH_HOME` 时也会共享该插件根，业务隔离必须依靠目录与记录中的 `projectId`，不能假装路径天然按 profile 隔离。
 - 如果后续改用 SQLite，物理文件可变为 `$DSH_HOME/storages/dsh-window/ledger.db`，但下面的逻辑层级、ID 和读取顺序必须保持等价。
 
@@ -906,6 +952,10 @@ $DSH_HOME/storages/dsh-window/             # 插件唯一数据根；默认 ~/.d
 | `WINDOW_SEED_REQUIRED` | seed_text 为空或只有空白 | continuation 提供断点；branch 提供独立任务包 |
 | `WINDOW_OPEN_UNAVAILABLE` | sessionController、Storage 等必要能力不可用，或 create 无项目落点 | 修复装配/落点后重试 |
 | `WINDOW_OPEN_FAILED` | fork/create 宿主调用失败，或开窗参数被拒（含 `title` > 200 字符，FR-20 走此码而非 `WINDOW_INVALID_INPUT`） | 根据原因重试或调整 mode；不产生半截会话 |
+| `WINDOW_WORKSPACE_NOT_FOUND` | `target_workspace` 未命中任何已登记工作区（回执附有界候选） | 用候选里的 workspace id / 标题 / 绝对路径重试；不要退回源工作区假装成功 |
+| `WINDOW_WORKSPACE_AMBIGUOUS` | `target_workspace` 按 id/路径/标题某一级命中多个工作区 | 改用 workspace id 或绝对路径；不得猜一个继续 |
+| `WINDOW_WORKSPACE_UNAVAILABLE` | 宿主未装配工作区解析能力，或 `workspaceRegistry.list` 读取失败 | 修复宿主装配或注册表后重试；不得静默退回源工作区 |
+| `WINDOW_WORKSPACE_UNSUPPORTED` | `target_workspace` 与 `mode=fork` 组合，或与**项目内** `topic_id` 组合 | 改用 `mode=create`；跨工作区协作请用 `topic_scope=global`；同工作区省略 `target_workspace` |
 | `WINDOW_SEED_DELIVERY_FAILED` | 保留码（历史契约）；**当前实现不抛出**：seed 未送达由 `success=false` + `delivery.delivered=false` + `degraded_note` 表达 | 读 `delivery` 判断真实投递状态，用返回的 window_key 手动接续，不能谎称场景已建立 |
 | `WINDOW_RUN_NOT_FOUND` | run_id 不存在，或 continuation 窗口调用 branch 完成 | 核对 run_id 与 scenario |
 | `WINDOW_RUN_NOT_ACTIVE` | seed 未送达、run 尚未活动或 seed_failed 时尝试首次完成 | 先确认 seed 投递与 callback_armed，不在未开始的分支上伪造结果 |
@@ -987,6 +1037,8 @@ dsh-window ──X──▶ dsh-pmboard / pm-core / pm-common / tool-pm
 | AC-29 结构化结果 | run 声明 output_schema，completed 时不带 / 带非法 / 带合法 structured | 前两者返回 REQUIRED/INVALID 且不落 result、不回调；合法时落盘并可由 window_status 读回；topic completion entry 只保存 completionId 与摘要，不复制完整 structured |
 | AC-30 branch 生命周期 | origin 归档/停止并触发 reconcile；再模拟 origin 超时与插件重启 | active run 进入 stop/orphan，claim 释放，child 尽力取消并留痕；超时 runStatus=orphaned 且 window_list 可见；重启恢复未送达 callback；continuation 与外部业务插件所有权不受影响 |
 | AC-31 标题策略 | ① 同一源连续开两个 seed 不同的 branch 窗口；② 再开一个 seed 只有协议行的窗口（源标题为 `源标题 (2)`）；③ 显式传 `title`；④ 让 `rename` 抛错 | ① 标题分别为 `分叉：<各自 seed 首条有效内容>` 且**互不相同**（continuation 对应 `续接：…`）；② 回退为 `源标题 (3)`；③ 使用显式值；④ `inheritance.title='failed'` 且原因可读，会话仍创建、预设与模型照常继承、`success` 判定不受影响 |
+| AC-32 跨工作区父子窗口（FR-21） | 在 workspace A 调 `window_open({scenario:'branch',mode:'create',target_workspace:<B 的 id/标题/路径>})`；再分别用默认 fork、不存在的目标、重名目标、项目内 `topic_id` 组合调用；子窗建立后 origin 调 `window_send`、child 调 `window_complete` | 成功时子窗落在 B、回执 `target_workspace` 与 seed 落点行一致，run 正常落盘，guidance 与完成回调跨工作区送达；默认 fork / 不存在 / 重名 / 项目内 topic 组合分别返回 `WINDOW_WORKSPACE_UNSUPPORTED` / `NOT_FOUND` / `AMBIGUOUS` / `UNSUPPORTED`，且都不创建会话 |
+| AC-33 全局主题与跨区消息（FR-22） | A（workspace A）创建 `topic_scope=global` 主题；B（workspace B）按 global 加入并 append；A 用 `window_topic_send` 广播；再用 `window_open(mode=create,target_workspace=B,topic_scope=global)` 开子窗；对项目内主题做同样 join | 全局主题 `project_id='@global'`、不同 workspace 的窗口可加入并读写；send 写一条 message entry 且只投给其他参与者、逐目标回报 delivered/failed、来源 kind 非 user；跨区子窗的 origin/child 都在同一全局主题参与者里；项目内主题对另一 workspace 仍返回 `WINDOW_TOPIC_NOT_FOUND`；删除 L0 索引重建后 global 来源不丢 |
 
 > AC-4 / AC-15 原为外部业务插件集成条款，已随本项目独立化移出范围；编号保留不复用，以免影响 AC-18 及之后的既有引用。
 
@@ -1004,6 +1056,8 @@ dsh-window ──X──▶ dsh-pmboard / pm-core / pm-common / tool-pm
 8. **运行时调度测试**：window_list 过滤与授权、window_inspect 只读边界、dispatch 忙/复用、send steer/queue、interrupt turn/run、wait all/any/timeout 与取消，并用真实并发验证同一 child 单活动 run。
 9. **结构化与生命周期测试**：output_schema 子集校验、structured 必填/非法/合法、topic entry 指针不复制正文、origin 归档 stop、orphan 超时、reconcile 重启恢复、continuation 不被生命周期控制影响。
 10. **标题策略测试**（FR-20）：优先级链三级（显式 > 任务派生 > 源标题递增 > skipped）、协议行跳过、列表符剥离、空白折叠、超长截断、半角/全角编号递增、投影读数解包、`rename` 抛错只让 title=failed 而不断其它两步。
+11. **跨工作区开窗测试**（FR-21）：workspace id / 绝对路径 / 标题三级寻址与优先级、标题歧义、未命中候选、注册表缺失、`fork` 组合拒绝、`topic_id` 组合拒绝、`mode=create` 落点与 seed 落点行、跨区 branch run 建立与回调武装；并用真实适配器验证 `create` 只把 `workspaceId` 交给宿主。
+12. **全局主题与消息测试**（FR-22）：global 项目归一与保留命名空间、L0 重建保留 global 来源、不同 workspace 参与者加入同一主题、项目内主题仍隔离、`message` entry 落盘与删除索引后的恢复、send 的发送者排除/去重/逐目标成功失败/skipped、消息来源 `dsh-window-topic-message`、`target_workspace + topic_scope=global` 开窗登记、append 拒绝 `kind='message'`。
 
 ---
 
@@ -1015,14 +1069,16 @@ dsh-window ──X──▶ dsh-pmboard / pm-core / pm-common / tool-pm
 
 | 批次 | 状态 | 证据 |
 |---|---|---|
-| B0 基础设施 + B1 发现 + B2 控制 + B3 等待 + B4 结构化 + B5 生命周期 | ✅ 已实现 | `window_open/complete/status/retry_callback/dispatch/list/inspect/send/interrupt/wait`；194 个测试，`pnpm typecheck/test/build` 全绿 |
+| B0 基础设施 + B1 发现 + B2 控制 + B3 等待 + B4 结构化 + B5 生命周期 | ✅ 已实现 | `window_open/complete/status/retry_callback/dispatch/list/inspect/send/interrupt/wait`；220 个测试，`pnpm typecheck/test/build` 全绿 |
 | B6 Topic Ledger | ✅ 已实现 | `window_topic_create/join/get/append/claim` + 分层存储（`index/projects/topics/participants\|entries\|claims\|conflicts/_journal`）+ revision CAS/claim/conflict + open/complete 接入 |
 | `window` Host Service（§6.5，供外部插件注入） | ✅ 已提供 | `ctx.provide('window', ...)`，含 open/complete/get/retryCallback/list/inspect/dispatch/send/interrupt/wait/topic*/reconcile/stopForOrigin，见 `src/hostService.ts` |
 | 需求条款差距补齐 | ✅ 已实现 | §6.16 wait `status` 过滤、§7.5 `RunMessage`、`RunLifecycle.drained` + drain 留痕、FR-16 status/list 复盘、§8 inspect 访问留痕、§6.12 工具名摘要、§6.9 租约配置上下限 |
 | 标题策略（FR-20） | ✅ 已实现 | `deriveTaskTitle` / `increasedWindowTitle` / `applyWindowInheritance`（`src/application/windowInherit.ts`）；三态回报 + 派生/递增/截断规则由 `test/titleInheritance.test.ts` 覆盖 |
+| 跨工作区父子窗口（FR-21 第一阶段） | ✅ 已实现 | `window_open(target_workspace)` + `SessionWindowOpener.resolveWorkspace`；id → 绝对路径 → 标题三级唯一命中，fork/topic 组合显式拒绝；`test/crossWorkspaceTarget.test.ts`、`test/openWindow.test.ts` 与 `test/toolOutputs.test.ts` 覆盖（共 16 个新用例） |
+| 全局主题与跨工作区消息（FR-22 第二阶段） | ✅ 已实现 | `topic_scope=project\|global`（`@global` 保留命名空间）+ `window_topic_send`（message entry + 逐目标投递）+ 跨区子窗加入全局主题；`test/topicStore.test.ts` / `test/topicTools.test.ts` 覆盖 |
 | B9 审核修复 | ✅ 已实现 | 见 [ADR-0002](../adr/0002-audit-fixes.md) 与完成清单 B9：topicAppend runId 归属校验、completionId 抢占防护、lifecycle 全锁化、orphan 在线否决、drain 原子写、损坏记录隔离、索引新鲜度、unknown 落盘与 retry 拦截、interrupt-run 生命周期/claim、status 补字段、delivery 分字段、幂等键、stopForOrigin 身份约束 |
 
-当前工具面共 **15 个**：`window_open / window_complete / window_status / window_retry_callback / window_dispatch / window_list / window_inspect / window_send / window_interrupt / window_wait / window_topic_create / window_topic_join / window_topic_get / window_topic_append / window_topic_claim`。
+当前工具面共 **16 个**：`window_open / window_complete / window_status / window_retry_callback / window_dispatch / window_list / window_inspect / window_send / window_interrupt / window_wait / window_topic_create / window_topic_join / window_topic_get / window_topic_append / window_topic_claim / window_topic_send`。
 
 ### B0 公共基础设施（先行，半天）
 

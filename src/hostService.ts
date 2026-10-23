@@ -26,6 +26,7 @@ import {
   topicCreate,
   topicGet,
   topicJoin,
+  topicSend,
 } from './application/topicLedger.js'
 import { reconcileRuns, stopActiveRunsForOrigin, type ReconcileSummary } from './application/lifecycle.js'
 import { WindowError } from './shared/errors.js'
@@ -45,6 +46,8 @@ import type {
   TopicCreateToolInput,
   TopicGetToolInput,
   TopicJoinToolInput,
+  TopicSendToolInput,
+  TopicSendValue,
   WaitRunsInput,
   WaitRunsValue,
   WindowDeps,
@@ -92,6 +95,8 @@ export interface WindowHostService {
   topicGet(input: TopicGetToolInput, exec: unknown): Promise<unknown>
   topicAppend(input: TopicAppendToolInput, exec: unknown): Promise<unknown>
   topicClaim(input: TopicClaimToolInput, exec: unknown): Promise<unknown>
+  /** 写一条协作消息并投递给其他参与者（`window_topic_send` 同用例）。 */
+  topicSend(input: TopicSendToolInput, exec: unknown): Promise<TopicSendValue>
   /** 生命周期对账（§6.17）：恢复未送达 callback、标记 orphan、清理半截写入。 */
   reconcile(): Promise<ReconcileSummary>
   /** 对某个 origin 名下的活动 run 做 stop（会话停止/归档联动）。 */
@@ -113,7 +118,9 @@ export function createWindowHostService(deps: WindowDeps): WindowHostService {
         ...(stringOf(raw['mode']) === undefined ? {} : { mode: raw['mode'] as WindowMode }),
         ...(typeof raw['atSeq'] === 'number' ? { atSeq: raw['atSeq'] } : {}),
         ...(stringOf(raw['title']) === undefined ? {} : { title: raw['title'] as string }),
+        ...(stringOf(raw['targetWorkspace']) === undefined ? {} : { targetWorkspace: raw['targetWorkspace'] as string }),
         ...(stringOf(raw['topicId']) === undefined ? {} : { topicId: raw['topicId'] as string }),
+        ...(stringOf(raw['topicScope']) === undefined ? {} : { topicScope: raw['topicScope'] as OpenWindowInput['topicScope'] }),
         ...(raw['outputSchema'] === undefined ? {} : { outputSchema: raw['outputSchema'] }),
         ...(raw['resultRequired'] === undefined ? {} : { resultRequired: raw['resultRequired'] === true }),
       }
@@ -126,9 +133,19 @@ export function createWindowHostService(deps: WindowDeps): WindowHostService {
         ...(value.window_key === undefined ? {} : { windowKey: value.window_key }),
         ...(value.parent_session_id === undefined ? {} : { parentSessionId: value.parent_session_id }),
         mode: value.mode,
+        ...(value.target_workspace === undefined
+          ? {}
+          : {
+              targetWorkspace: {
+                id: value.target_workspace.id,
+                title: value.target_workspace.title,
+                ...(value.target_workspace.path === undefined ? {} : { path: value.target_workspace.path }),
+              },
+            }),
         ...(value.run_id === undefined ? {} : { runId: value.run_id }),
         topicTracking: value.topic_tracking,
         ...(value.topic_id === undefined ? {} : { topicId: value.topic_id }),
+        ...(value.topic_scope === undefined ? {} : { topicScope: value.topic_scope }),
         ...(value.topic_revision === undefined ? {} : { topicRevision: value.topic_revision }),
         callbackArmed: value.callback_armed,
         ...(value.delivery === undefined
@@ -212,6 +229,7 @@ export function createWindowHostService(deps: WindowDeps): WindowHostService {
     topicGet: async (input, exec) => await topicGet(deps, input, exec),
     topicAppend: async (input, exec) => await topicAppend(deps, input, exec),
     topicClaim: async (input, exec) => await topicClaim(deps, input, exec),
+    topicSend: async (input, exec) => await topicSend(deps, input, exec),
     reconcile: async () => await reconcileRuns(deps),
   }
 }

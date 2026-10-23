@@ -28,10 +28,16 @@ import type {
   TopicStorePort,
   WindowCreateOptions,
   WindowDeps,
+  WindowWorkspaceTarget,
 } from './ports.js'
 import { applyWindowInheritance, presetInheritanceOf, readWindowProfile } from './windowInherit.js'
 import { execCwd } from './execView.js'
-import { buildTopicSeedAddendum, joinTopicParticipant, resolveTopicProject } from './topicLedger.js'
+import {
+  buildTopicSeedAddendum,
+  joinTopicParticipant,
+  normalizeTopicScope,
+  resolveTopicProjectByScope,
+} from './topicLedger.js'
 
 /** 校验并归一工具输入；scenario / seed_text 缺失在开窗前就拒绝。 */
 export function normalizeOpenWindowInput(raw: OpenWindowInput): NormalizedOpenWindowInput {
@@ -60,13 +66,32 @@ export function normalizeOpenWindowInput(raw: OpenWindowInput): NormalizedOpenWi
   if (rawTopicId !== undefined && (rawTopicId.includes('\0') || rawTopicId.length > 200)) {
     reject('WINDOW_INVALID_INPUT', 'window_open 未执行：topic_id 不能含 NUL，且不超过 200 字符')
   }
+  if (raw.topicScope !== undefined && rawTopicId === undefined) {
+    reject('WINDOW_INVALID_INPUT', 'window_open 未执行：topic_scope 只能与 topic_id 一起使用')
+  }
+  const topicScope = rawTopicId === undefined ? undefined : normalizeTopicScope(raw.topicScope)
+  const rawTarget = typeof raw.targetWorkspace === 'string' ? raw.targetWorkspace.trim() : undefined
+  if (raw.targetWorkspace !== undefined && (rawTarget === undefined || rawTarget.length === 0)) {
+    reject('WINDOW_INVALID_INPUT', 'window_open 未执行：target_workspace 不能为空或纯空白')
+  }
+  if (rawTarget !== undefined && (rawTarget.includes('\0') || rawTarget.length > 1_024)) {
+    reject('WINDOW_INVALID_INPUT', 'window_open 未执行：target_workspace 不能含 NUL，且不超过 1024 字符')
+  }
+  if (rawTarget !== undefined && mode !== 'create') {
+    reject(
+      'WINDOW_WORKSPACE_UNSUPPORTED',
+      "window_open 未执行：target_workspace 仅支持 mode='create'；fork 会继承源会话的 cwd，不能换工作区",
+    )
+  }
   return {
     scenario: raw.scenario,
     mode,
     seedText,
     ...(raw.atSeq === undefined ? {} : { atSeq: raw.atSeq }),
     ...(title === undefined ? {} : { title }),
+    ...(rawTarget === undefined ? {} : { targetWorkspace: rawTarget }),
     ...(rawTopicId === undefined ? {} : { topicId: rawTopicId }),
+    ...(topicScope === undefined ? {} : { topicScope }),
     ...(raw.outputSchema === undefined ? {} : { outputSchema: raw.outputSchema }),
     ...(raw.resultRequired === undefined ? {} : { resultRequired: raw.resultRequired === true }),
   }
@@ -110,13 +135,26 @@ export function resolvePlacement(
   return undefined
 }
 
+/** 显式目标工作区的一行说明；只陈述落点，不宣称与 origin 共享 cwd。 */
+function workspaceSeedLine(target: WindowWorkspaceTarget | undefined): string[] {
+  if (target === undefined) return []
+  const path = target.path === undefined ? '' : ` (${target.path})`
+  return [`target_workspace: ${target.title}${path}`]
+}
+
 /** seed 任务包：让新窗口知道自己是续接还是分叉，以及 branch 必须显式完成。 */
-export function buildSeedText(input: NormalizedOpenWindowInput, runId?: string, topicAddendum?: string): string {
+export function buildSeedText(
+  input: NormalizedOpenWindowInput,
+  runId?: string,
+  topicAddendum?: string,
+  targetWorkspace?: WindowWorkspaceTarget,
+): string {
   const header = input.scenario === 'branch'
     ? [
         '[DSH Window 分支任务包]',
         'scenario: branch',
         ...(runId === undefined ? [] : [`run_id: ${runId}`]),
+        ...workspaceSeedLine(targetWorkspace),
         '完成后必须调用 window_complete 上报 status 与 content；普通 turn/end 不算完成。',
         '---',
         '',
@@ -124,6 +162,7 @@ export function buildSeedText(input: NormalizedOpenWindowInput, runId?: string, 
     : [
         '[DSH Window 续接任务包]',
         'scenario: continuation',
+        ...workspaceSeedLine(targetWorkspace),
         '本窗口接管当前任务；结果留在本窗口，不向原窗口主动回调。',
         '---',
         '',
@@ -175,22 +214,71 @@ export async function openWindow(
     }
   }
 
+  // 目标工作区必须在创建会话之前解析：未命中/歧义都不建窗，也不退回源工作区。
+  let targetWorkspace: WindowWorkspaceTarget | undefined
+  if (input.targetWorkspace !== undefined) {
+    const resolveWorkspace = opener.resolveWorkspace
+    if (typeof resolveWorkspace !== 'function') {
+      reject(
+        'WINDOW_WORKSPACE_UNAVAILABLE',
+        'window_open 未执行：本宿主未装配工作区解析能力（workspaceRegistry.list 不可得）',
+      )
+    }
+    const resolved = resolveWorkspace.call(opener, input.targetWorkspace)
+    if (!resolved.ok) {
+      if (resolved.code === 'not_found') {
+        const names = (resolved.candidates ?? [])
+          .slice(0, 5)
+          .map((item) => `${item.title}${item.path === undefined ? '' : `（${item.path}）`}`)
+          .join('、')
+        reject(
+          'WINDOW_WORKSPACE_NOT_FOUND',
+          `window_open 未执行：没有匹配的工作区「${input.targetWorkspace}」`
+          + `${names.length === 0 ? '' : `；可用：${names}`}`,
+          resolved.candidates === undefined ? undefined : { candidates: resolved.candidates },
+        )
+      }
+      if (resolved.code === 'ambiguous') {
+        reject('WINDOW_WORKSPACE_AMBIGUOUS', `window_open 未执行：${resolved.reason}`, {
+          ...(resolved.candidates === undefined ? {} : { candidates: resolved.candidates }),
+        })
+      }
+      reject('WINDOW_WORKSPACE_UNAVAILABLE', `window_open 未执行：${resolved.reason}`)
+    }
+    targetWorkspace = resolved.workspace
+  }
+
   // Topic 意图校验必须在创建会话之前：存储不可用或主题不存在时不建窗、不投递 seed，
   // 也不静默降级成未跟踪协作。
   const topicStore = deps.topicStore
   let topicRoster: { store: NonNullable<WindowDeps['topicStore']>; ref: TopicRef } | undefined
   if (input.topicId !== undefined) {
+    const topicScope = input.topicScope ?? 'project'
+    // 跨工作区父子窗口只有全局主题可以共用；项目内主题仍要求同一个 workspace。
+    if (targetWorkspace !== undefined && topicScope !== 'global') {
+      const sourceProject = opener.resolveSourceProject?.(origin)
+      if (sourceProject?.workspaceId !== targetWorkspace.id) {
+        reject(
+          'WINDOW_WORKSPACE_UNSUPPORTED',
+          'window_open 未执行：target_workspace 与项目内 topic_id 不能组合；'
+          + '跨工作区协作请用 topic_scope=global，同一工作区请省略 target_workspace',
+        )
+      }
+    }
     if (topicStore === undefined || !topicStore.available()) {
       reject(
         'WINDOW_TOPIC_STORAGE_UNAVAILABLE',
         'window_open 未执行：请求了 topic_id 但主题台账存储不可用；窗口未创建、seed 未投递',
       )
     }
-    const ref: TopicRef = { project: resolveTopicProject(deps, exec, origin), topicId: input.topicId }
+    const ref: TopicRef = {
+      project: resolveTopicProjectByScope(deps, exec, origin, topicScope),
+      topicId: input.topicId,
+    }
     if ((await topicStore.getTopic(ref)) === undefined) {
       reject(
         'WINDOW_TOPIC_NOT_FOUND',
-        `window_open 未执行：主题 ${input.topicId} 不存在或不属于当前项目；先 window_topic_create`,
+        `window_open 未执行：主题 ${input.topicId} 不存在（topic_scope=${topicScope}）；先 window_topic_create`,
       )
     }
     topicRoster = { store: topicStore, ref }
@@ -202,7 +290,10 @@ export async function openWindow(
   if (input.mode === 'fork') {
     outcome = await opener.fork(origin, input.atSeq)
   } else {
-    const placement = resolvePlacement(opener, origin, exec)
+    // 显式目标工作区优先；未给时才按源项目 / 调用会话 cwd 定位。两者都不猜。
+    const placement: WindowCreateOptions | undefined = targetWorkspace === undefined
+      ? resolvePlacement(opener, origin, exec)
+      : { workspaceId: targetWorkspace.id }
     if (placement === undefined) {
       reject(
         'WINDOW_OPEN_UNAVAILABLE',
@@ -269,8 +360,10 @@ export async function openWindow(
         window_key: childKey,
         ...(outcome.parentSessionId === undefined ? {} : { parent_session_id: outcome.parentSessionId }),
         mode: input.mode,
+        ...(targetWorkspace === undefined ? {} : { target_workspace: targetWorkspace }),
         topic_tracking: false,
-        ...(input.topicId === undefined ? {} : { topic_id: input.topicId }),
+...(input.topicId === undefined ? {} : { topic_id: input.topicId }),
+        ...(input.topicId === undefined ? {} : { topic_scope: input.topicScope ?? 'project' }),
         callback_armed: false,
         inheritance,
         degraded_note: `${DEGRADED_NOTE} 主题参与登记失败：${reasonOf(error)}；协作未启用，不得声称具备协作防冲突能力。`,
@@ -314,8 +407,10 @@ export async function openWindow(
         window_key: childKey,
         ...(outcome.parentSessionId === undefined ? {} : { parent_session_id: outcome.parentSessionId }),
         mode: input.mode,
+        ...(targetWorkspace === undefined ? {} : { target_workspace: targetWorkspace }),
         topic_tracking: topic !== undefined,
-        ...(input.topicId === undefined ? {} : { topic_id: input.topicId }),
+...(input.topicId === undefined ? {} : { topic_id: input.topicId }),
+        ...(input.topicId === undefined ? {} : { topic_scope: input.topicScope ?? 'project' }),
         ...(topic === undefined ? {} : { topic_revision: topic.revision }),
         callback_armed: false,
         inheritance,
@@ -325,7 +420,7 @@ export async function openWindow(
   }
 
   const topicAddendum = topic === undefined ? undefined : buildTopicSeedAddendum(topic.snapshot)
-  const seedText = buildSeedText(input, run?.runId, topicAddendum)
+  const seedText = buildSeedText(input, run?.runId, topicAddendum, targetWorkspace)
   const { message, messageId } = seedDelivery.createMessage({
     text: seedText,
     kind: SEED_KIND,
@@ -399,9 +494,11 @@ export async function openWindow(
     window_key: childKey,
     ...(outcome.parentSessionId === undefined ? {} : { parent_session_id: outcome.parentSessionId }),
     mode: input.mode,
+    ...(targetWorkspace === undefined ? {} : { target_workspace: targetWorkspace }),
     ...(run === undefined ? {} : { run_id: run.runId }),
     topic_tracking: topic !== undefined,
     ...(input.topicId === undefined ? {} : { topic_id: input.topicId }),
+    ...(input.topicId === undefined ? {} : { topic_scope: input.topicScope ?? 'project' }),
     ...(topic === undefined ? {} : { topic_revision: topic.revision }),
     callback_armed: callbackArmed,
     delivery,
