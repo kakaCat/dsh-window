@@ -9,40 +9,7 @@ import { openWindow } from '../application/openWindow.js'
 import { SCENARIOS, WINDOW_MODES } from '../shared/protocol.js'
 
 /** 工具提示词：把两个场景的选择规则说清。 */
-export const WINDOW_OPEN_PROMPT = `打开一个新窗口，按业务目的选择 continuation 或 branch。
-
-选择规则：
-- continuation：当前窗口上下文将满，新窗口接管并继续当前任务。默认 mode=create，不生成 run_id，不回调原窗口。
-- branch：原窗口保留主任务，只把独立分叉任务交给新窗口，完成后需要把结果回调原窗口。默认 mode=fork。
-- 两个场景都必填 seed_text；不得用 mode 反推 scenario。
-
-调用后：
-- 会话出现在侧栏；本工具不会替你打开并列窗口。
-- continuation 成功 = 会话已创建且 seed 已投递。
-- branch 成功 = 会话已创建、run 已落盘、seed 已投递且回调已 armed（callback_armed=true）。
-- 标题 / 模式 / 模型继承三项分别以 set / skipped / failed 回报，继承失败不影响开窗。
-- 标题：显式 title 优先；不传时按任务派生「续接：<seed 摘要>」/「分叉：<seed 摘要>」，seed 没有有效内容才回退源标题递增——同一源派出的多个窗口因此不会同名。
-
-结构化结果（仅 branch）：
-- output_schema 是 object 根 JSON Schema 子集；声明后子窗口必须用 window_complete 带 structured 上报。
-- result_required=true 时必须同时给 output_schema；非法 schema → WINDOW_OUTPUT_SCHEMA_INVALID（不创建 run）。
-
-跨工作区开窗（target_workspace）：
-- 仅 mode=create：提供 target_workspace 时必须显式 mode='create'；fork 继承源会话 cwd，不能换工作区。
-- 接受 workspace id、标题或绝对路径；命中多个或不命中都会响亮失败（WINDOW_WORKSPACE_AMBIGUOUS / NOT_FOUND），不会退回源工作区。
-- 子窗建立后，origin→child 的 window_send / window_dispatch / window_complete / window_wait 与同工作区完全一致；dispatch 派给已有 child 时自动沿用它的工作区。
-- 与项目内 topic_id 不能组合；跨工作区协作请用 topic_scope=global（见下）。
-
-多窗口协作（topic_id / topic_scope）：
-- 提供 topic_id 时，origin 与 child 会在投递 seed 前登记进同一主题并取得同一 revision 快照，回执 topic_tracking=true、topic_revision=开跑版本。
-- topic_scope 缺省 project（主题按调用窗口所在项目寻址）；topic_scope=global 使用跨工作区共享主题，可同时与 target_workspace 组合。
-- 主题不存在 → WINDOW_TOPIC_NOT_FOUND；主题存储不可用 → WINDOW_TOPIC_STORAGE_UNAVAILABLE；两者都在建会话前失败，不会静默降级成未跟踪协作。
-- 缺席 topic_id 时保持原行为并返回 topic_tracking=false，不声称具备协作防冲突能力。
-
-失败时：
-- scenario 缺失 → WINDOW_SCENARIO_REQUIRED；seed_text 为空 → WINDOW_SEED_REQUIRED。
-- 服务不可用 / create 拿不到项目落点 / fork 没有完整回合 → WINDOW_OPEN_UNAVAILABLE。
-- 建会话宿主失败 → WINDOW_OPEN_FAILED。`
+export const WINDOW_OPEN_PROMPT = `Open a new window and hand a task to it. Choose the scenario by purpose: continuation when the current window is near its context limit and a new window should take over the current task (no run, no callback to the origin); branch to hand an independent side task to a new window, which reports back with window_complete and delivers the result to the origin. Scenario is the business intent; mode only chooses how the session is created (fork carries context, create starts fresh), so never infer the scenario from mode. The new window appears in the sidebar; this tool does not open a side-by-side window for you. Pass target_workspace to create the child in another workspace, and topic_id to register both windows in a shared topic before the seed is delivered.`
 
 /** 回执一句话摘要。 */
 function summaryOf(value: unknown): string {
@@ -68,46 +35,46 @@ export function defineWindowOpenTool(deps: OpenWindowDeps) {
         type: 'string',
         enum: [...SCENARIOS],
         required: true,
-        description: 'continuation = 接管当前任务且不回调；branch = 完成后回调原窗口',
+        description: 'continuation takes over the current task with no callback; branch calls the result back to the origin when done.',
       },
       mode: {
         type: 'string',
         enum: [...WINDOW_MODES],
-        description: 'fork = 带上下文；create = 全新会话。缺省：continuation→create，branch→fork',
+        description: 'fork carries context; create starts a fresh session. Defaults: continuation→create, branch→fork.',
       },
       at_seq: {
         type: 'integer',
-        description: '仅 fork：切点事件序号（含）；缺省 = 最近一个完整回合',
+        description: 'fork only: event sequence number to fork at (inclusive); defaults to the latest complete turn.',
       },
       title: {
         type: 'string',
-        description: '新窗口标题；不传则按任务派生「续接：…」/「分叉：…」，再回退源标题递增',
+        description: 'New window title. When omitted, it is derived from the task, falling back to an incremented source title.',
       },
       seed_text: {
         type: 'string',
         required: true,
-        description: 'continuation 的断点底稿，或 branch 的独立任务包；不能为空',
+        description: 'Breakpoint brief for continuation, or the standalone task package for branch; must not be empty.',
       },
       target_workspace: {
         type: 'string',
-        description: '目标工作区（workspace id / 标题 / 绝对路径）；仅 mode=create；子窗建到该工作区后与 origin 的父子消息完全互通',
+        description: 'Target workspace (workspace id, title, or absolute path). mode=create only; fork inherits the source session cwd and cannot change workspaces.',
       },
       topic_id: {
         type: 'string',
-        description: '多窗口协作主题；提供时 origin/child 会在投递 seed 前登记并绑定同一 revision',
+        description: 'Collaboration topic id. When provided, the origin and child join it and bind the same revision before the seed is delivered.',
       },
       topic_scope: {
         type: 'string',
         enum: ['project', 'global'],
-        description: '主题作用域；缺省 project；global 时允许与 target_workspace 组合，跨工作区共用一个主题',
+        description: 'Topic scope. Defaults to project; global allows combination with target_workspace and shares one topic across workspaces.',
       },
       output_schema: {
         type: 'json',
-        description: '仅 branch：object 根 JSON Schema 子集，约定 structured 结果形状',
+        description: 'branch only: an object-rooted JSON Schema subset describing the structured result.',
       },
       result_required: {
         type: 'boolean',
-        description: '仅 branch：true 时必须同时给 output_schema',
+        description: 'branch only: true requires output_schema.',
       },
     },
     output: {
@@ -115,29 +82,29 @@ export function defineWindowOpenTool(deps: OpenWindowDeps) {
         type: 'object',
         additionalProperties: false,
         properties: {
-          success: { type: 'boolean', description: '请求的场景是否完整建立' },
+          success: { type: 'boolean', description: 'Whether the requested scenario was fully established.' },
           scenario: { type: 'string', description: 'continuation / branch' },
           callback_policy: { type: 'string', description: 'none / required' },
-          session_created: { type: 'boolean', description: '会话是否已创建' },
-          window_key: { type: 'string', description: '新窗口码（= 新会话 id）；失败时如已创建也会返回' },
-          parent_session_id: { type: 'string', description: 'fork 的源窗口；create 时省略' },
-          mode: { type: 'string', description: '实际使用的 fork / create' },
+          session_created: { type: 'boolean', description: 'Whether the session was created.' },
+          window_key: { type: 'string', description: 'New window key (= new session id); returned even on failure if the session was created.' },
+          parent_session_id: { type: 'string', description: 'Source window for fork; omitted for create.' },
+          mode: { type: 'string', description: 'The fork or create mode actually used.' },
           target_workspace: {
             type: 'object',
             additionalProperties: false,
             properties: {
               id: { type: 'string', description: 'workspace id' },
-              title: { type: 'string', description: 'workspace 显示名' },
-              path: { type: 'string', description: 'workspace 绝对路径' },
+              title: { type: 'string', description: 'Workspace display name.' },
+              path: { type: 'string', description: 'Absolute workspace path.' },
             },
-            description: '显式指定 target_workspace 时的实际落点',
+            description: 'Resolved destination when target_workspace is supplied.',
           },
-          run_id: { type: 'string', description: '仅 branch：运行记录 id' },
-          topic_tracking: { type: 'boolean', description: '是否已登记进项目主题台账；false 时不具备协作防冲突能力' },
-          topic_id: { type: 'string', description: '协作主题 ID' },
-          topic_scope: { type: 'string', description: '本次主题作用域：project / global' },
-          topic_revision: { type: 'integer', description: '开窗口时登记的主题 revision（用作完成时的 base_revision）' },
-          callback_armed: { type: 'boolean', description: 'continuation 恒 false；branch seed 投递成功时为 true（此时完成后会回调原窗口）' },
+          run_id: { type: 'string', description: 'branch only: run record id.' },
+          topic_tracking: { type: 'boolean', description: 'Whether the windows were registered in the topic ledger; false means no collaboration conflict protection.' },
+          topic_id: { type: 'string', description: 'Collaboration topic id.' },
+          topic_scope: { type: 'string', description: 'Topic scope used: project or global.' },
+          topic_revision: { type: 'integer', description: 'Topic revision registered at open time (used as base_revision when completing).' },
+          callback_armed: { type: 'boolean', description: 'Always false for continuation; true for branch after the seed is delivered (the origin will then receive the callback).' },
           delivery: {
             type: 'object',
             additionalProperties: false,
@@ -159,7 +126,7 @@ export function defineWindowOpenTool(deps: OpenWindowDeps) {
               reasons: { type: 'array', items: { type: 'string' } },
             },
           },
-          degraded_note: { type: 'string', description: '诚实降级说明' },
+          degraded_note: { type: 'string', description: 'Honest degradation note.' },
         },
       },
       render: (_args, value) => [{ type: 'text', text: summaryOf(value) }],

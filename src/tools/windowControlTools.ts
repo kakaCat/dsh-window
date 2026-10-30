@@ -9,21 +9,10 @@ import { sendGuidance } from '../application/sendGuidance.js'
 import type { RunCallbackState, RunResult, WindowDeps } from '../application/ports.js'
 
 /** `window_send` 提示词。 */
-export const WINDOW_SEND_PROMPT = `向运行中的 branch child 投递引导（steer/排队），只引导、不完成。
-
-- 只有 run 的 origin 能发；child、sibling、无关窗口一律拒绝。
-- 目标必须有活动 run；没有活动 run 返回 WINDOW_RUN_NOT_ACTIVE，派新任务请用 window_dispatch。
-- 目标正在运行 → steer（最近 step 边界生效）；空闲 → followup 排队。
-- 不创建 run、不改 runStatus、不写 result/callback；只返回是否被目标接受。
-- 消息来源 dsh-window-guidance，正文标明“非用户新指令”。`
+export const WINDOW_SEND_PROMPT = `Send guidance to a running branch child. This only guides the child and never completes the run. A running target receives the message at its next step boundary (steer); an idle target queues it for its next turn. The message is marked as coming from a collaborating window, not as a new user instruction. Only the run's origin may send, and the target must have an active run; use window_dispatch to assign new work.`
 
 /** `window_interrupt` 提示词。 */
-export const WINDOW_INTERRUPT_PROMPT = `中断 branch child 当前轮，或取消整条 run。
-
-- mode='turn'：只取消当前轮，run 保持 active，收件箱与后续引导保留。
-- mode='run'：取消当前轮 + run 置 cancelled，callback=not_requested（origin 主动取消不回调自己）。
-- 只有 run 的 origin 可以调用；child 不能中断自己或 sibling。
-- 目标离线时如实报告：turn 报“未执行”；run 仍可落盘取消，但会说明 child 未被中断。`
+export const WINDOW_INTERRUPT_PROMPT = `Stop a branch child's current turn, or cancel its whole run. mode='turn' stops only the current turn and leaves the run active, preserving its inbox and queued guidance; mode='run' also marks the run cancelled and sends no callback to the origin. Only the run's origin may call this. When the target is offline, the result states truthfully whether it was actually interrupted.`
 
 const resultProperties = {
   status: { type: 'string' as const },
@@ -59,9 +48,9 @@ export function defineWindowSendTool(deps: WindowDeps) {
     name: 'window_send',
     description: WINDOW_SEND_PROMPT,
     parameters: {
-      run_id: { type: 'string', description: '目标 run id；与 to_window 至少给一个（同时给必须一致）' },
-      to_window: { type: 'string', description: '目标 child 窗口码；用于定位其唯一活动 run' },
-      message: { type: 'string', required: true, description: '引导正文，≤4000 字符' },
+      run_id: { type: 'string', description: 'Target run id. Provide this or to_window; if both are given they must match.' },
+      to_window: { type: 'string', description: 'Target child window key; used to locate its single active run.' },
+      message: { type: 'string', required: true, description: 'Guidance text, at most 4000 characters.' },
     },
     output: {
       schema: {
@@ -98,9 +87,9 @@ export function defineWindowInterruptTool(deps: WindowDeps) {
     name: 'window_interrupt',
     description: WINDOW_INTERRUPT_PROMPT,
     parameters: {
-      run_id: { type: 'string', required: true, description: '要中断/取消的 run id' },
-      mode: { type: 'string', enum: ['turn', 'run'], required: true, description: 'turn=只停当前轮；run=取消整条 run' },
-      reason: { type: 'string', description: '中断原因，进控制留痕，≤500 字符' },
+      run_id: { type: 'string', required: true, description: 'Run id to interrupt or cancel.' },
+      mode: { type: 'string', enum: ['turn', 'run'], required: true, description: 'turn stops only the current turn; run cancels the whole run.' },
+      reason: { type: 'string', description: 'Reason for the interrupt, recorded in the control log; at most 500 characters.' },
     },
     output: {
       schema: {

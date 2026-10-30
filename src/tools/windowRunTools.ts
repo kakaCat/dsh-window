@@ -10,40 +10,16 @@ import type { RunCallbackState, RunResult, WindowDeps } from '../application/por
 import { RUN_TERMINAL_STATUSES } from '../shared/protocol.js'
 
 /** `window_complete` 提示词。 */
-export const WINDOW_COMPLETE_PROMPT = `上报 branch 续跑的实际完成结果。
-
-- status：completed / failed / cancelled，必须是对任务结果的声明，不是回合状态。
-- content：非空结果结论、验证结果与产物路径；不复制完整对话。
-- structured：run 声明了 output_schema 时，status=completed 必须提供，且必须符合该 schema；不符会被拒绝且不落盘、不回调。
-- 未声明 output_schema 的 run 不接受 structured。
-- base_revision：run 绑定了 topic 时必填；等于完成前最新主题 revision。revision 已变化返回 WINDOW_TOPIC_STALE，在保存结果与回调前停止；存在与本 run 相关的未解决冲突时返回 WINDOW_TOPIC_CONFLICT。
-- run_id：可省略的唯一条件是当前窗口只有一个活动 branch run；多个必须显式传。
-- 普通 turn/end 不算完成；只有本工具或宿主业务插件的确定性完成信号才算。
-- 绑定 topic 时自动写入 completion entry（只存 completionId 与有界摘要，不复制 structured 正文），再投递回调。
-- 先落结果，再投递回调；回调失败不回滚结果，可用 window_retry_callback 重试。`
+export const WINDOW_COMPLETE_PROMPT = `Report the actual result of a branch run: persist the result first, then deliver the callback to the origin. status is the task outcome (completed, failed, or cancelled), not the turn state. content states the conclusion, verification, and artifact paths without copying the full conversation. When the run declared output_schema, completed must include a structured value that matches it; runs without a schema do not accept structured. A failed callback does not roll back the result, so retry it with window_retry_callback. An ordinary turn/end is not a completion; only this tool or a deterministic completion signal from a host plugin counts.`
 
 /** `window_status` 提示词。 */
-export const WINDOW_STATUS_PROMPT = `查询一个 branch run 的只读状态。
-
-- 只有 origin（原窗口）与 child（分支窗口）可以读取。
-- run 状态与 callback 状态分开：结果已完成但回调未送达时，callback 会显示 failed / unknown。
-- 声明过 output_schema 的 run 会一并返回 schema 与 structured 结果。
-- 不返回其他窗口的完整对话。`
+export const WINDOW_STATUS_PROMPT = `Read one branch run's status without changing it. Only the origin and the child can read it. Run status and callback status are returned separately; when a result is complete but its callback has not been delivered, callback reports failed or unknown. A run that declared output_schema also returns the schema and structured result. No other window's full conversation is returned.`
 
 /** `window_retry_callback` 提示词。 */
-export const WINDOW_RETRY_CALLBACK_PROMPT = `重试把一个已完成的 branch 结果回调投递给原窗口。
-
-- 只有 origin 原窗口可以重试；child 不能借重试向其他窗口发消息。
-- 结果必须已经落盘（run 有 result）；seed 未送达的 run 不能重试。
-- 使用同一个 callbackId，重试不会伪造新的逻辑结果。`
+export const WINDOW_RETRY_CALLBACK_PROMPT = `Retry delivery of a completed branch result to its origin window. Use it only after the result is persisted and the callback is unconfirmed; the retry reuses the original callback identity and never fabricates a new logical result. Only the origin may retry.`
 
 /** `window_dispatch` 提示词。 */
-export const WINDOW_DISPATCH_PROMPT = `向已有的 branch child 再派一条任务，不创建新会话。
-
-- 只允许与目标 child 存在既有委派关系的原窗口调用；continuation 接管窗口和任意无关窗口一律拒绝。
-- 同一 child 同时最多一条活动 run，忙时返回 WINDOW_CHILD_BUSY；完成后再派下一条。
-- 每次派发生成新的 run_id，child 完成后照常 window_complete 回调原窗口。
-- child 上下文会累积；接近顶墙时应新开 branch/continuation，而不是继续向同一 child 塞任务。`
+export const WINDOW_DISPATCH_PROMPT = `Dispatch another task to an existing branch child without opening a new session. Each dispatch creates a new run, and the child reports it through window_complete as usual so the origin receives the callback. Only the origin with an existing delegation relationship to that child may dispatch. The child's context accumulates; when it approaches its limit, open a fresh window with window_open instead.`
 
 /** 结果对象输出 schema。 */
 const resultProperties = {
@@ -134,11 +110,11 @@ export function defineWindowCompleteTool(deps: WindowDeps) {
     name: 'window_complete',
     description: WINDOW_COMPLETE_PROMPT,
     parameters: {
-      run_id: { type: 'string', description: 'branch run id；当前窗口只有一个活动 run 时可省略' },
+      run_id: { type: 'string', description: 'Branch run id; omit only when the current window has exactly one active run.' },
       status: { type: 'string', enum: [...RUN_TERMINAL_STATUSES], required: true, description: 'completed / failed / cancelled' },
-      content: { type: 'string', required: true, description: '非空完成结果；failed/cancelled 写真实原因与已有产出' },
-      structured: { type: 'json', description: '声明 output_schema 时 completed 必填；必须符合该 schema' },
-      base_revision: { type: 'integer', description: 'run 绑定 topic 时必填；等于完成前最新主题 revision' },
+      content: { type: 'string', required: true, description: 'Non-empty completion result; for failed or cancelled, give the real reason and any output produced.' },
+      structured: { type: 'json', description: 'Required for completed when the run declared output_schema; must match that schema.' },
+      base_revision: { type: 'integer', description: 'Required when the run is bound to a topic; must equal the latest topic revision before completion.' },
     },
     output: {
       schema: {
@@ -187,7 +163,7 @@ export function defineWindowStatusTool(deps: WindowDeps) {
     name: 'window_status',
     description: WINDOW_STATUS_PROMPT,
     parameters: {
-      run_id: { type: 'string', required: true, description: '要查询的 branch run id' },
+      run_id: { type: 'string', required: true, description: 'Branch run id to query.' },
     },
     output: {
       schema: {
@@ -326,7 +302,7 @@ export function defineWindowRetryCallbackTool(deps: WindowDeps) {
     name: 'window_retry_callback',
     description: WINDOW_RETRY_CALLBACK_PROMPT,
     parameters: {
-      run_id: { type: 'string', required: true, description: '结果已落盘但回调未确认的 branch run id' },
+      run_id: { type: 'string', required: true, description: 'Branch run id whose result is persisted but whose callback is unconfirmed.' },
     },
     output: {
       schema: {
@@ -353,10 +329,10 @@ export function defineWindowDispatchTool(deps: WindowDeps) {
     name: 'window_dispatch',
     description: WINDOW_DISPATCH_PROMPT,
     parameters: {
-      to_window: { type: 'string', required: true, description: '已有 branch child 的窗口码（= 会话 id）' },
-      seed_text: { type: 'string', required: true, description: '追加任务包；不能为空' },
-      output_schema: { type: 'json', description: '本次追加任务的结构化契约；object 根 JSON Schema 子集' },
-      result_required: { type: 'boolean', description: 'true 时必须同时给 output_schema' },
+      to_window: { type: 'string', required: true, description: 'Window key of an existing branch child (= session id).' },
+      seed_text: { type: 'string', required: true, description: 'Additional task package; must not be empty.' },
+      output_schema: { type: 'json', description: 'Structured contract for this task; an object-rooted JSON Schema subset.' },
+      result_required: { type: 'boolean', description: 'true requires output_schema.' },
     },
     output: {
       schema: {

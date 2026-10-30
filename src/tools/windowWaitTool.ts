@@ -8,13 +8,7 @@ import type { RunStatus, WindowDeps } from '../application/ports.js'
 import { waitRuns } from '../application/waitRuns.js'
 
 /** `window_wait` 提示词。 */
-export const WINDOW_WAIT_PROMPT = `等待一组 branch run 进入终态，再继续 origin 的后续步骤。
-
-- 目标三选一：run_ids 显式列表、scope='my_active'（本窗口 origin 的活动 run）、topic_id。
-- mode='all' 等全部终态；mode='any' 任一终态即返回。
-- timeout_ms 到点返回当前快照 + timed_out=true；running 不等于完成。
-- 拉取语义：不消费 callback、不改 run；callback 仍会照常投递。
-- 只有 origin 或对应 child 能等待自己的 run；无关窗口返回 WINDOW_RUN_FORBIDDEN。`
+export const WINDOW_WAIT_PROMPT = `Wait for a set of branch runs to reach a terminal state before continuing the origin's next step. Select targets with run_ids, scope='my_active', or topic_id; mode='all' waits for every run, while 'any' returns on the first terminal run. At timeout_ms it returns the current snapshot with timed_out set; a running run is not complete. Waiting does not consume the callback or modify any run.`
 
 /** 回执摘要。 */
 function waitSummary(value: unknown): string {
@@ -31,16 +25,16 @@ export function defineWindowWaitTool(deps: WindowDeps) {
     name: 'window_wait',
     description: WINDOW_WAIT_PROMPT,
     parameters: {
-      run_ids: { type: 'array', items: { type: 'string' }, description: '显式目标 run id 列表' },
-      scope: { type: 'string', enum: ['my_active'], description: '本窗口 origin 的活动 run' },
-      topic_id: { type: 'string', description: '等待该 topic 相关且本窗口可见的 run' },
+      run_ids: { type: 'array', items: { type: 'string' }, description: 'Explicit list of target run ids.' },
+      scope: { type: 'string', enum: ['my_active'], description: 'Active runs started by this origin window.' },
+      topic_id: { type: 'string', description: 'Wait for runs related to this topic that are visible to this window.' },
       status: {
         type: 'array',
         items: { type: 'string' },
-        description: '只等待这些 run 状态（FR-17）：pending/running/completed/failed/cancelled/seed_failed/orphaned',
+        description: 'Wait only for these run states: pending, running, completed, failed, cancelled, seed_failed, orphaned.',
       },
-      mode: { type: 'string', enum: ['all', 'any'], required: true, description: 'all=全部终态；any=任一终态' },
-      timeout_ms: { type: 'integer', required: true, description: '最长等待毫秒数；到点返回快照' },
+      mode: { type: 'string', enum: ['all', 'any'], required: true, description: 'all waits for every run; any returns on the first terminal run.' },
+      timeout_ms: { type: 'integer', required: true, description: 'Maximum wait in milliseconds; returns the current snapshot when reached.' },
     },
     output: {
       schema: {
@@ -49,7 +43,7 @@ export function defineWindowWaitTool(deps: WindowDeps) {
         properties: {
           timed_out: { type: 'boolean' },
           aborted: { type: 'boolean' },
-          hint: { type: 'string', description: '超时时的建议动作' },
+          hint: { type: 'string', description: 'Suggested action on timeout.' },
           runs: {
             type: 'array',
             items: {
