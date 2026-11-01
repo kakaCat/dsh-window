@@ -182,7 +182,7 @@ describe('工具回执符合 output schema', () => {
 
   it('window_complete / window_status / window_retry_callback（含 structured 与 snake_case 回调）', async () => {
     const store = new MemoryRunStore()
-    await store.create(record({ outputSchema: SCHEMA, resultRequired: true }))
+    await store.create(record({ outputSchema: SCHEMA, resultRequired: true, contractAttached: true }))
     const deps = makeDeps({ runStore: store, schemaGuard: new JsonSchemaGuard() })
 
     const complete = defineWindowCompleteTool(deps)
@@ -192,6 +192,7 @@ describe('工具回执符合 output schema', () => {
     const status = defineWindowStatusTool(deps)
     const statusValue = await runTool(status as never, { run_id: 'run-1' })
     expect(statusValue['output_schema']).toEqual(SCHEMA)
+    expect(statusValue['contract_attached']).toBe(true)
 
     const retry = defineWindowRetryCallbackTool(deps)
     await runTool(retry as never, { run_id: 'run-1' })

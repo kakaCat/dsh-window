@@ -1351,6 +1351,8 @@ export interface RunStatusValue {
   callback: RunCallbackState
   /** 建窗时发现的同源同内容活动 run（观测用；不表示本次被拦截）。 */
   duplicate_of?: string[]
+  /** 建窗时是否已挂上常驻分支契约；false 常见于冷会话（等 agent/created 补挂）。 */
+  contract_attached?: boolean
   last_activity_at: number
   /** child 最近一次真实推进时间（宿主事件驱动）；缺省表示尚无观测。 */
   last_turn_at?: number

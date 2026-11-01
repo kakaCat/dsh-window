@@ -27,6 +27,7 @@ interface AgentLike {
 
 interface AgentsLike {
   get?: (id: string) => unknown
+  list?: () => unknown[]
 }
 
 interface ContextLike {
@@ -115,6 +116,22 @@ export class BranchPrompts implements BranchPromptPort {
       const id = agent?.id
       if (typeof id === 'string') this.release(id)
     })
+    // 回填：插件在子窗「已经在跑」时才被启用 / 重载的场景，不会再收到 agent/created。
+    void this.backfill()
+  }
+
+  /** 给安装时已经在线的 agent 补挂契约（只对查得到活动 run 的会话生效）。 */
+  private async backfill(): Promise<void> {
+    let live: unknown[]
+    try {
+      live = this.agents()?.list?.() ?? []
+    } catch {
+      return
+    }
+    for (const raw of live) {
+      if (raw === null || typeof raw !== 'object') continue
+      await this.attachFromEvent(raw as AgentLike)
+    }
   }
 
   /** 异步取文本后再挂：查找期间 agent 可能已被销毁，挂之前再确认一次。 */

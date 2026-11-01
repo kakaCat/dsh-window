@@ -332,6 +332,7 @@ export async function getRunStatus(deps: WindowDeps, runId: string, exec: unknow
     ...(messages === undefined ? {} : { messages }),
     callback: callbackOf(run),
     ...(run.duplicateOf === undefined ? {} : { duplicate_of: run.duplicateOf }),
+    ...(run.contractAttached === undefined ? {} : { contract_attached: run.contractAttached }),
     last_activity_at: run.lastActivityAt ?? run.updatedAt,
     ...(run.lastTurnAt === undefined ? {} : { last_turn_at: run.lastTurnAt }),
     created_at: run.createdAt,

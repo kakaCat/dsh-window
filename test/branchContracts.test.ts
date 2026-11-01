@@ -170,6 +170,18 @@ describe('BranchPrompts 适配器', () => {
     expect(host.sections.size).toBe(0)
   })
 
+  it('安装时回填已在线的 agent：插件在子窗运行中才启用/重载也能补挂', async () => {
+    const host = fakeHost()
+    const live = fakeAgent(host, CHILD)
+    host.agents.set(CHILD, live)
+    const store = new MemoryRunStore()
+    await store.create(makeRunRecord({ runId: 'run-live', childSessionId: CHILD }))
+    const port = new BranchPrompts(() => host.ctx, () => ({ ...host.agents, list: () => [live] }))
+    installBranchContracts(makeDeps(store, { branchPrompts: port }))
+    await tick()
+    expect(host.sections.get(CHILD)?.text).toContain('run_id: run-live')
+  })
+
   it('宿主没有 on 能力时安静降级；stop 幂等', async () => {
     const store = new MemoryRunStore()
     await store.create(makeRunRecord({ runId: 'run-1', childSessionId: CHILD }))

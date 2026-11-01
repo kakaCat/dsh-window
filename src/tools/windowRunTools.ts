@@ -187,6 +187,7 @@ export function defineWindowStatusTool(deps: WindowDeps) {
           topic_id: { type: 'string' },
           started_topic_revision: { type: 'integer' },
           duplicate_of: { type: 'array', items: { type: 'string' } },
+          contract_attached: { type: 'boolean' },
           last_activity_at: { type: 'number' },
           last_turn_at: { type: 'number' },
           lifecycle: {
@@ -250,6 +251,7 @@ export function defineWindowStatusTool(deps: WindowDeps) {
         created_by: value.created_by,
         run_status: value.run_status,
         ...(value.duplicate_of === undefined ? {} : { duplicate_of: value.duplicate_of }),
+        ...(value.contract_attached === undefined ? {} : { contract_attached: value.contract_attached }),
         last_activity_at: value.last_activity_at,
         ...(value.last_turn_at === undefined ? {} : { last_turn_at: value.last_turn_at }),
         ...(value.topic_id === undefined ? {} : { topic_id: value.topic_id }),
