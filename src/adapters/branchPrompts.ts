@@ -66,6 +66,15 @@ export class BranchPrompts implements BranchPromptPort {
     }
   }
 
+  /** 热路径：run 建好后立刻挂，不等 `agent/created`。 */
+  attach(sessionId: string, text: string): boolean {
+    if (text.length === 0) return false
+    if (this.disposers.has(sessionId)) return true
+    const agent = this.agents()?.get?.(sessionId)
+    if (agent === null || typeof agent !== 'object') return false
+    return this.register(sessionId, agent as AgentLike, text)
+  }
+
   dispose(): void {
     for (const id of [...this.disposers.keys()]) this.release(id)
     for (const unsubscribe of this.subscriptions.splice(0).reverse()) {
@@ -99,7 +108,7 @@ export class BranchPrompts implements BranchPromptPort {
     }
     subscribe('agent/created', (payload) => {
       const agent = agentOf(payload)
-      if (agent !== undefined) void this.attach(agent)
+      if (agent !== undefined) void this.attachFromEvent(agent)
     })
     subscribe('agent/disposed', (payload) => {
       const agent = agentOf(payload)
@@ -109,7 +118,7 @@ export class BranchPrompts implements BranchPromptPort {
   }
 
   /** 异步取文本后再挂：查找期间 agent 可能已被销毁，挂之前再确认一次。 */
-  private async attach(agent: AgentLike): Promise<void> {
+  private async attachFromEvent(agent: AgentLike): Promise<void> {
     const id = agent.id
     if (typeof id !== 'string' || id.length === 0) return
     let text: string | undefined
@@ -121,13 +130,21 @@ export class BranchPrompts implements BranchPromptPort {
     if (text === undefined || text.length === 0) return
     if (this.disposers.has(id)) return
     if (this.agents()?.get?.(id) !== agent) return
+    this.register(id, agent, text)
+  }
+
+  /** 真正调用宿主 `section()`；没有能力或抛错时安静降级。 */
+  private register(id: string, agent: AgentLike, text: string): boolean {
     const prompt = agent.ctx?.systemPrompt
-    if (typeof prompt?.section !== 'function') return
+    if (typeof prompt?.section !== 'function') return false
     try {
       const disposer = prompt.section({ name: SECTION_NAME, order: SECTION_ORDER, interpolate: false, text })
-      if (typeof disposer === 'function') this.disposers.set(id, disposer as () => void)
+      if (typeof disposer !== 'function') return false
+      this.disposers.set(id, disposer as () => void)
+      return true
     } catch {
       // 注册失败：只当作没挂，agent 照常创建。
+      return false
     }
   }
 

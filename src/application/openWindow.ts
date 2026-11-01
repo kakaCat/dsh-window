@@ -32,6 +32,7 @@ import type {
   WindowWorkspaceTarget,
 } from './ports.js'
 import { applyWindowInheritance, presetInheritanceOf, readWindowProfile } from './windowInherit.js'
+import { branchContractText } from './branchContracts.js'
 import { execCwd } from './execView.js'
 import {
   buildTopicSeedAddendum,
@@ -459,6 +460,15 @@ export async function openWindow(
     }
     try {
       await deps.runStore!.create(run)
+      // 热路径：run 刚落盘、agent 已存在（创建早于 run），立刻挂常驻契约；
+      // 等 `agent/created` 已经来不及——它触发时还查不到 run。
+      const contractAttached = deps.branchPrompts?.attach(childKey, branchContractText(run)) ?? false
+      // 留一个可诊断读数：true 表示契约真的挂上了（false 常见于冷会话，等 agent/created 补挂）。
+      try {
+        await deps.runStore!.update(run.runId, { contractAttached })
+      } catch {
+        // 读数写入失败不影响建窗。
+      }
     } catch (error: unknown) {
       await markTopicParticipants(topic, deps, [origin, childKey], input.scenario, 'seed_failed').catch(() => undefined)
       return {

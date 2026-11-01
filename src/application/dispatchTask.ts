@@ -11,6 +11,7 @@ import { DEGRADED_NOTE, SEED_KIND } from '../shared/protocol.js'
 import { reasonOf, reject } from '../shared/errors.js'
 import type { DispatchTaskInput, DispatchTaskValue, RunRecord, WindowDeps } from './ports.js'
 import { assertSchemaContract } from './openWindow.js'
+import { branchContractText } from './branchContracts.js'
 
 /** 追加任务 seed 正文。 */
 export function buildDispatchSeedText(seedText: string, runId: string): string {
@@ -102,6 +103,14 @@ export async function dispatchTask(
       updatedAt: now,
     }
     await store.create(run)
+    // 同 window_open：建完 run 立刻挂契约，agent 可能早已创建（或冷会话稍后创建，
+    // 那一路由 agent/created 补挂）。
+    const contractAttached = deps.branchPrompts?.attach(input.toWindow, branchContractText(run)) ?? false
+    try {
+      await store.update(runId, { contractAttached })
+    } catch {
+      // 读数写入失败不影响派单。
+    }
 
     let delivered = false
     let deliveryReason: string | undefined

@@ -145,6 +145,31 @@ describe('BranchPrompts 适配器', () => {
     expect(host.releases).toEqual([])
   })
 
+  it('attach 热路径：run 建好即挂，不等 agent/created；重复调用不重复挂', async () => {
+    const host = fakeHost()
+    const port = new BranchPrompts(() => host.ctx, () => host.agents)
+    const agent = fakeAgent(host, CHILD)
+    host.agents.set(CHILD, agent)
+
+    port.attach(CHILD, '契约正文')
+    const section = host.sections.get(CHILD)
+    expect(section?.text).toBe('契约正文')
+    expect(section?.name).toBe('dsh-window-branch')
+
+    port.attach(CHILD, '契约正文')
+    expect(host.sections.size).toBe(1)
+    expect(host.releases).toEqual([])
+  })
+
+  it('attach：agent 不存在 / 没有 systemPrompt 能力时不抛、不挂', () => {
+    const host = fakeHost()
+    const port = new BranchPrompts(() => host.ctx, () => host.agents)
+    expect(() => port.attach('session-cold', 'x')).not.toThrow()
+    host.agents.set('session-bare', { id: 'session-bare', ctx: {} })
+    expect(() => port.attach('session-bare', 'x')).not.toThrow()
+    expect(host.sections.size).toBe(0)
+  })
+
   it('宿主没有 on 能力时安静降级；stop 幂等', async () => {
     const store = new MemoryRunStore()
     await store.create(makeRunRecord({ runId: 'run-1', childSessionId: CHILD }))

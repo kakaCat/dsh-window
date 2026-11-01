@@ -184,8 +184,20 @@ export interface BranchPromptPort {
   /**
    * 订阅 agent 创建 / 销毁；对 `decorate` 返回了文本的会话挂上常驻 section。
    * 返回取消订阅（并释放已挂 section）。实现必须永不抛。
+   *
+   * 这是**冷路径**：agent 晚于 run 创建（例如重启后重新载入会话）时靠它补挂。
    */
   watch(decorate: (sessionId: string) => Promise<string | undefined>): () => void
+  /**
+   * 立刻给已存在的 agent 挂 section（热路径）。
+   *
+   * 必须显式调用：`agent/created` 可能早于 run 记录落盘，那时查不到 run，
+   * 等 run 建好 agent 已经创建完、不会再触发该事件。永不抛。
+   *
+   * 返回是否已挂上（false = agent 未加载 / 宿主无 systemPrompt 能力 / 注册失败），
+   * 供 run 记录留一个可诊断的读数。
+   */
+  attach(sessionId: string, text: string): boolean
   /** 释放订阅。可选。 */
   dispose?(): void
 }
@@ -267,6 +279,8 @@ export interface RunRecord {
   openKey?: string
   /** 建窗时发现同源同键的活动 run（只观测、不拦截）；缺省表示没有。 */
   duplicateOf?: string[]
+  /** 建窗时是否成功给 child 挂上常驻契约；缺省表示旧记录或未尝试。 */
+  contractAttached?: boolean
   /** 最近一次 seed/guidance/控制操作或状态变化时间；旧记录缺省按 updatedAt 处理。不随每个回合刷新。 */
   lastActivityAt?: number
   /**

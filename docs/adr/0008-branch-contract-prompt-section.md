@@ -43,7 +43,23 @@
 - 真机：重启后开一个 branch 子窗，在它的会话日志里 grep `DSH Window 分支契约`，
   应出现在 `system/message` 中；再让它跑多轮，确认压缩后契约仍在、仍会 `window_complete`。
 
-## 五、已知取舍
+## 五、第一次实机验证失败与修正（重要）
+
+第一次上线后开子窗自检，子窗口答 `contract=NO_CONTRACT`：契约没进模型。
+
+原因不是 `section()` 用错，而是**时序**：宿主在 `sessionController.create` 时就把 agent
+建好了，`agent/created` 那一刻 run 记录还没落盘，`findActiveRunByChild` 返回 undefined，
+于是静默跳过；等 run 建好，agent 已经创建完、不会再触发该事件。
+
+修正：
+
+- 端口加 `attach(sessionId, text)`（热路径）：`window_open` / `window_dispatch` 在
+  **run 落盘之后、seed 投递之前**立刻挂载——system prompt 是「每次模型步骤前组装」的
+  （`systemPrompt.assemble`），此刻挂上就能进第一次组装；
+- `agent/created` 保留为冷路径：重启后重新载入的会话，agent 晚于 run 创建时靠它补挂；
+- 两条路径共用同一个 `register()`，按会话去重（`disposers` 已有则跳过）。
+
+## 六、已知取舍
 
 section 是「提示」，不是强制：child 仍可能不调用 `window_complete`。本 ADR 只是把
 「契约在上下文里」这件事做稳，不引入自动完成或超时判定（REQ G-4 的边界不变）。

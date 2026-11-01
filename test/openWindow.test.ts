@@ -521,6 +521,46 @@ describe('跨工作区开窗（target_workspace）', () => {
   })
 })
 
+describe('branch 常驻契约接线', () => {
+  it('branch 建完 run 立刻 attach（不等 agent/created），continuation 不 attach', async () => {
+    const store = new MemoryRunStore()
+    const { opener } = makeOpener({ registryProject: { cwd: '/ws' } })
+    const { port } = makeDelivery()
+    const attached: { id: string; text: string }[] = []
+    const deps = {
+      ...makeDeps({ opener, delivery: port, runStore: store }),
+      branchPrompts: { watch: () => () => undefined, attach: (id: string, text: string) => { attached.push({ id, text }); return true } },
+    }
+
+    const branch = await openWindow(deps, { scenario: 'branch', seedText: '做事' }, EXEC)
+    expect(attached).toHaveLength(1)
+    expect(attached[0]!.id).toBe(branch.window_key)
+    expect(attached[0]!.text).toContain(`run_id: ${branch.run_id}`)
+    expect(attached[0]!.text).toContain('window_complete')
+
+    const continuation = await openWindow(deps, { scenario: 'continuation', seedText: '接手' }, EXEC)
+    expect((await store.get(branch.run_id!))?.contractAttached).toBe(true)
+    expect(continuation.run_id).toBeUndefined()
+    expect(attached).toHaveLength(1) // continuation 没有 run，不注入
+  })
+
+  it('run 落盘失败时不 attach（没有可挂的对象）', async () => {
+    class BrokenCreateStore extends MemoryRunStore {
+      override async create(): Promise<void> { throw new Error('create boom') }
+    }
+    const { opener } = makeOpener()
+    const { port } = makeDelivery()
+    const attached: string[] = []
+    const deps = {
+      ...makeDeps({ opener, delivery: port, runStore: new BrokenCreateStore() }),
+      branchPrompts: { watch: () => () => undefined, attach: (id: string) => { attached.push(id); return true } },
+    }
+    const value = await openWindow(deps, { scenario: 'branch', seedText: '做事' }, EXEC)
+    expect(value.success).toBe(false)
+    expect(attached).toEqual([])
+  })
+})
+
 describe('重复开窗观测（只记录、不拦截）', () => {
   function counterDeps(store: MemoryRunStore): OpenWindowDeps {
     const { opener } = makeOpener()
