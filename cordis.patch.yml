@@ -1,9 +1,26 @@
-# dsh-window 的装载层（bundle patch）。
-# 注册 15 个 window_* 工具，并通过 ctx.provide('window', ...) 暴露 Host Service：
-# open / complete / get / retryCallback / list / inspect / dispatch / send / interrupt / wait /
-# topicCreate / topicJoin / topicGet / topicAppend / topicClaim / reconcile / stopForOrigin。
-# 可选配置：dataRoot / orphanTimeoutMs / waitPollMs / leaseMinMs / leaseMaxMs。
+# dsh-window 的装载层（bundle patch）——「一个 bundle、三行、三个开关」。
+#
+# 三行按能力面拆分，插件页里每行一个开关；关掉哪行，那行的 `apply` 就不跑，
+# 它的工具根本不注册（模型完全看不到），而不是"注册了但调用报错"。
+#
+#   行 dsh-window          对话组：window_open / send / complete / status / list（+ window Host Service + 生命周期对账）
+#   行 dsh-window-control  管控组：window_dispatch / inspect / interrupt / wait / retry_callback
+#   行 dsh-window-topic    协作组：window_topic_create / join / get / append / claim / send（缺省关闭）
+#
+# 三行共用同一份数据根：`dataRoot` **必须三行同值**（缺省都是 $DSH_HOME/storages/dsh-window）。
+# 只在一行上改 dataRoot，另外两行会各写各的目录，run 与 topic 互相看不见。
+# 其余配置项（orphanTimeoutMs / waitPollMs / leaseMinMs / leaseMaxMs）按行各自生效，
+# 只有对话组用到 orphanTimeoutMs，只有管控组用到 waitPollMs，只有协作组用到租约上下限。
 - insert:
     - id: dsh-window
       name: dsh-window
+      config: {}
+    - id: dsh-window-control
+      name: dsh-window/control
+      config: {}
+    - id: dsh-window-topic
+      name: dsh-window/topic
+      # 协作组缺省关闭：6 个 topic 工具只在多窗口协作时用得到，开着会长期占据模型可见的工具列表。
+      # 要用时在插件页把这一行的开关打开（或把这里改成 disabled: false）。
+      disabled: true
       config: {}

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "DSH 窗口插件：续接（continuation）与分叉（branch）双场景开窗、运行登记与后续完成回调的通用基础",
+  "description": "DSH 窗口插件：对话 / 管控 / 协作三行可独立开关的窗口工具，含续接与分叉双场景、运行登记、完成回调与 Topic Ledger",
   "license": "MIT",
   "author": "kakaCat <253834671@qq.com>",
   "repository": {
@@ -30,6 +30,16 @@
       "types": "./dist/index.d.mts",
       "import": "./dist/index.mjs",
       "default": "./dist/index.mjs"
+    },
+    "./control": {
+      "types": "./dist/control.d.mts",
+      "import": "./dist/control.mjs",
+      "default": "./dist/control.mjs"
+    },
+    "./topic": {
+      "types": "./dist/topic.d.mts",
+      "import": "./dist/topic.mjs",
+      "default": "./dist/topic.mjs"
     },
     "./package.json": "./package.json"
   },

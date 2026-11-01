@@ -1,9 +1,10 @@
 import { defineConfig } from 'tsdown'
 
-// Host-half build：DSH 从编译产物加载插件，故 ship dist/index.mjs。
+// Host-half build：DSH 从编译产物加载插件，故 ship dist/*.mjs。
+// 三行 = 三个入口：index（对话组）/ control（管控组）/ topic（协作组）。
 // @deepseek-ai/dsh-tools / cordis 必须 external：内联会打进第二份模块级调度 Symbol。
 export default defineConfig({
-  entry: { index: 'src/index.ts' },
+  entry: { index: 'src/index.ts', control: 'src/control.ts', topic: 'src/topic.ts' },
   format: ['esm'],
   outDir: 'dist',
   clean: true,

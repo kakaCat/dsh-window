@@ -38,6 +38,8 @@ pnpm build
 
 非法值在装配期响亮失败（`WINDOW_CONFIG_INVALID`）。
 
+三行各自读自己的 `config`：**`dataRoot` 必须三行同值**（缺省都指向同一个根，只改一行会让另外两行各写各的目录，run 与 topic 互相看不见）。其余键按用途只在对应行生效：`orphanTimeoutMs` 对话组、`waitPollMs` 管控组、`leaseMinMs` / `leaseMaxMs` 协作组。
+
 ## 两个场景
 
 | 场景 | 用途 | 默认 mode | 回调 |
@@ -47,18 +49,35 @@ pnpm build
 
 `scenario` 是业务语义，`mode` 是会话创建方式；回调策略只由 `scenario` 决定，不能用 `mode` 反推。
 
-## 提供的工具
+## 工具面：三行、三个开关
+
+一个 bundle 装三行插件（见 [cordis.patch.yml](cordis.patch.yml)），插件页里每行一个开关；关掉哪行，那行的 `apply` 就不跑，它的工具根本不注册（模型完全看不到），而不是「注册了但调用报错」。
+
+| 行 | 缺省 | 工具 |
+|---|---|---|
+| `dsh-window`（对话组） | 开 | `window_open` `window_send` `window_complete` `window_status` `window_list` |
+| `dsh-window/control`（管控组） | 开 | `window_dispatch` `window_inspect` `window_interrupt` `window_wait` `window_retry_callback` |
+| `dsh-window/topic`（协作组） | 关 | `window_topic_create` `window_topic_join` `window_topic_get` `window_topic_append` `window_topic_claim` `window_topic_send` |
+
+`window` Host Service 与启动对账 / 卸载 drain 只由对话组提供；管控组与协作组只注册自己的工具，不重复 provide、不重复对账。
+
+### 对话组
 
 - `window_open`：按 scenario 开窗，投递自署来源的 seed，并做标题 / 模式 / 模型继承回执；可选 `target_workspace` 把子窗开到另一个工作区（仅 `mode=create`）；配合 `topic_scope='global'` 可与跨区子窗共用同一全局主题。
+- `window_send`：origin 向运行中的 child 投递引导（steer/排队）；只引导、不完成。
 - `window_complete`：branch 完成后上报 `status` 与 `content`；先落结果，再回调 origin。
 - `window_status`：origin / child 只读查询 run 与 callback 状态。
-- `window_retry_callback`：origin 对已落盘但回调未确认的 run 手动重试；同一 `callbackId` 不伪造新结果。
-- `window_dispatch`：向已有 branch child 再派一条任务；不创建新会话，新建 run，完成后仍回调 origin。
 - `window_list`：分页列出本窗口可见的 branch run 摘要（origin 见自己的、child 见分配给自己的）。
+
+### 管控组
+
+- `window_dispatch`：向已有 branch child 再派一条任务；不创建新会话，新建 run，完成后仍回调 origin。
 - `window_inspect`：只读查看某个窗口的会话元数据与（可选）分页历史；不做任何写操作。
-- `window_send`：origin 向运行中的 child 投递引导（steer/排队）；只引导、不完成。
 - `window_interrupt`：origin 中断 child 当前轮（turn）或取消整条 run（run）；origin 主动取消不回调自己。
 - `window_wait`：等待一组 branch run 进入终态（all/any + timeout），拉取语义、不消费 callback。
+- `window_retry_callback`：origin 对已落盘但回调未确认的 run 手动重试；同一 `callbackId` 不伪造新结果。
+
+### 协作组
 - `window_topic_create`：在当前项目创建或按 ID 幂等打开项目主题（目标不一致响亮拒绝）。
 - `window_topic_join`：把当前窗口自己加入主题并取得首份同构快照。
 - `window_topic_get`：按 L0 → L1 → L2 → L3 金字塔读取；省略 `topic_id` 只读项目/主题摘要，提供时读 L2 与最近明细分页。
@@ -72,6 +91,7 @@ pnpm build
 已实现：
 
 - 独立插件工程、装载清单与构建；
+- 工具面按能力拆三行（对话 / 管控 / 协作），插件页可逐行开关，默认只开对话 + 管控；
 - `window_open` 的 continuation / branch 双场景；
 - create 落点（workspaceId 优先、cwd 兜底、都没有则响亮失败）；
 - seed 自署投递（`source.kind='dsh-window-seed'`，永不为 `user`）；
