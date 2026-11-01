@@ -180,6 +180,64 @@ cat ~/.dsh/storages/dsh-window/audit.jsonl   # inspect 的访问留痕
 
 ---
 
+## H. 回调可靠性与重复开窗（ADR-0005 / 0006 / 0007）
+
+> 目标：证明「送达 ≠ 已读」、自动重投、`attention` 聚合、重复开窗观测和工具 schema 都没漂。
+> 代价：会新建 2–4 个窗口，跑完在侧栏删掉即可。
+
+**操作**
+
+1. 开两个**同 seed** 的 branch 窗口（`mode=create`，seed 让 child 只做一件事：调
+   `window_complete`）：
+
+```text
+window_open({ scenario:'branch', mode:'create', seed_text:'[冒烟] 不要读写文件，直接 window_complete(status=completed, content=冒烟：OK) 后结束；没有该工具就回 NO_TOOL' })
+window_open({ scenario:'branch', mode:'create', seed_text:'<同上原样>' })
+```
+
+2. **立刻**（child 还在跑时）查最新两条 run 的内容键与重复标记：
+
+```bash
+cd ~/.dsh/storages/dsh-window/runs
+for d in $(ls -t | grep -v index.json | head -2); do
+  node -e "const r=require('./$d/run.json');console.log('$d'.slice(0,8),r.status,'key='+r.openKey,'dup='+JSON.stringify(r.duplicateOf??null),'seed='+r.seedMessageId)"
+done
+```
+
+3. 等两条回调都作为消息进入本窗口后，再查读回执：
+
+```bash
+node -e "const r=require('./<runId>/run.json');console.log(r.callback)"
+```
+
+4. 本窗口调 `window_list({limit:5})` 与 `window_wait({run_ids:[...], mode:'all', timeout_ms:30000})`。
+
+**预期**
+
+- 两次开窗的 `openKey` 相同；第二条 run 的 `duplicateOf` 指向第一条，**两条都照常创建**；
+- `seedMessageId` 形如 `seed-<runId>`（不是随机 UUID）；
+- 回调 `status='delivered'`、`attempts=1`；消息进入 origin 历史后出现 `readAt`（与
+  `deliveredAt` 之间可能相隔数分钟——这正是「送达 ≠ 已读」）；
+- `window_list` 的 `attention.total` 随已读降为 0，此时摘要里**没有** ⚠️ 行；
+- `window_wait` 对已终态的 run 立即返回、不报 schema 错。
+
+**失败特征**
+
+- `window_wait` / `window_list` 整条回执被宿主拒收：
+  `"value.runs[0].last_turn_at" is not a declared property` 或
+  `"value.rows[3].callback.readAt" is not a declared property` —— 工具 output schema 与
+  投影字段漂移（`additionalProperties: false` 会直接拒收）。
+- 同 seed 第二次开窗 `duplicateOf` 为空：第一条当时已终态（child 太快），改用 `sleep 25`
+  的 seed 重试；
+- `readAt` 一直不出现：回调消息还没被本窗口读进历史（等下一轮），或 `sessionActivity`
+  端口未装配（看 `window_list` 的 `attention` 是否一直不降）。
+
+**新增字段时的纪律**：`listRowOf` / `callbackOut` 每加一个字段，必须同步三处——
+工具 `output.schema`、render 用到的字段、以及 snake_case 命名（`read_at`、`last_turn_at`）。
+`test/toolOutputs.test.ts` 有防漂移用例守着。
+
+---
+
 ## 通过判据
 
 - A/B/C/D/E/F/G 全部符合预期，且每条的磁盘取证与工具回执一致；
