@@ -1,6 +1,6 @@
 {
   "name": "dsh-window",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "DSH 窗口插件：对话 / 管控 / 协作三行可独立开关的窗口工具，含续接与分叉双场景、运行登记、完成回调与 Topic Ledger",
