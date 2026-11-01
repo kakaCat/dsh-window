@@ -238,6 +238,49 @@ node -e "const r=require('./<runId>/run.json');console.log(r.callback)"
 
 ---
 
+## I. 常驻分支契约自检（`origin_window` 探针）
+
+> 目标：证明契约**真的进了模型上下文**，不是「日志里有、模型看不到」。
+> 代价：1 个子窗口、1 次子回合。
+
+**操作**
+
+1. 开一个 branch 子窗，seed 里让它自检：
+
+```text
+window_open({ scenario:'branch', mode:'create', seed_text:
+  '[自检] 不要读写文件，不要调用除 window_complete 以外的工具。看你的 system prompt 里有没有一段标题为「DSH Window 分支契约」。若有，找出其中 origin_window 的值，调用 window_complete(status=completed, content=\'contract=<origin_window>\')；若没有，content=\'contract=NO_CONTRACT\'。' })
+```
+
+2. 读 run 记录：
+
+```bash
+cd ~/.dsh/storages/dsh-window/runs
+node -e "const r=require('./<runId>/run.json');console.log(r.contractAttached, r.result.content, r.originSessionId)"
+```
+
+**预期**
+
+- `contractAttached === true`；
+- `result.content === 'contract=<originSessionId>'` —— **两者逐字相等**；
+- 子窗会话日志里 `DSH Window 分支契约` 出现多次（system/message 与后续请求）。
+
+**为什么用 `origin_window` 当探针**
+
+这个值**只存在于注入的契约里**，seed 的 `[DSH Window 分支任务包]` 只带 `run_id`。
+子窗能报出它，才证明契约进了模型；只 grep 会话日志会被「system/message 只在首次组装时
+写入」误导——日志里没有不等于模型看不到，日志里有也不等于这一轮真的带上了。
+
+**失败特征与定位**
+
+| 现象 | 含义 | 定位 |
+|---|---|---|
+| `contract=NO_CONTRACT` 且 `contractAttached=false` | 挂载根本没发生（多为冷会话：agent 晚于 run 创建） | 看 run 创建与 agent 生命周期；冷会话应走 `agent/created` 补挂 |
+| `contractAttached=true` 但仍 `NO_CONTRACT` | 挂上了但没进这次组装（时序/作用域） | 检查挂载点是否早于第一次 prompt 组装 |
+| 宿主拒收回执（`is not a declared property`） | 新增字段没同步工具 output schema | 见 H 节的字段纪律 |
+
+---
+
 ## 通过判据
 
 - A/B/C/D/E/F/G 全部符合预期，且每条的磁盘取证与工具回执一致；
