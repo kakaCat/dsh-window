@@ -28,6 +28,8 @@ export interface WindowConfig {
   callbackGraceMs?: number
   /** 只对这段时间内送达的回调做回执对账；缺省 7 天。 */
   callbackReceiptWindowMs?: number
+  /** 同一 origin 同时允许的活动 branch run 数；缺省 16。 */
+  maxActiveRunsPerOrigin?: number
 }
 
 /** 校验并补默认值后的配置。 */
@@ -41,6 +43,7 @@ export interface ResolvedWindowConfig {
   activityTouchMs: number
   callbackGraceMs: number
   callbackReceiptWindowMs: number
+  maxActiveRunsPerOrigin: number
 }
 
 /** 默认值：集中一处，便于测试与文档引用。 */
@@ -53,6 +56,7 @@ export const DEFAULT_WINDOW_CONFIG: ResolvedWindowConfig = {
   activityTouchMs: 30_000,
   callbackGraceMs: 60_000,
   callbackReceiptWindowMs: 7 * 24 * 60 * 60 * 1000,
+  maxActiveRunsPerOrigin: 16,
 }
 
 function positiveInt(raw: unknown, name: string, min: number): number | undefined {
@@ -80,6 +84,8 @@ export function resolveConfig(raw: WindowConfig = {}): ResolvedWindowConfig {
   const callbackGraceMs = positiveInt(raw.callbackGraceMs, 'callbackGraceMs', 1_000) ?? DEFAULT_WINDOW_CONFIG.callbackGraceMs
   const callbackReceiptWindowMs = positiveInt(raw.callbackReceiptWindowMs, 'callbackReceiptWindowMs', 60_000)
     ?? DEFAULT_WINDOW_CONFIG.callbackReceiptWindowMs
+  const maxActiveRunsPerOrigin = positiveInt(raw.maxActiveRunsPerOrigin, 'maxActiveRunsPerOrigin', 1)
+    ?? DEFAULT_WINDOW_CONFIG.maxActiveRunsPerOrigin
   if (leaseMaxMs < leaseMinMs) {
     throw new WindowError('WINDOW_CONFIG_INVALID', `配置 leaseMaxMs(${leaseMaxMs}) 不能小于 leaseMinMs(${leaseMinMs})`)
   }
@@ -93,5 +99,6 @@ export function resolveConfig(raw: WindowConfig = {}): ResolvedWindowConfig {
     activityTouchMs,
     callbackGraceMs,
     callbackReceiptWindowMs,
+    maxActiveRunsPerOrigin,
   }
 }

@@ -1230,6 +1230,8 @@ export interface WindowDeps {
   sessionActivity?: SessionActivityPort
   /** 子窗口常驻契约注入；缺失时退化为「只有 seed 里写了一次」。 */
   branchPrompts?: BranchPromptPort
+  /** 同一 origin 同时允许的活动 branch run 数；缺省 16。 */
+  maxActiveRunsPerOrigin?: number
   /** 回调自动重试的扫描间隔；缺省 2s。 */
   callbackRetryMs?: number
   /** child 推进写 `lastTurnAt` 的最小节流间隔；缺省 30s。 */

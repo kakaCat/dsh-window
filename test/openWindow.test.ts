@@ -633,3 +633,87 @@ describe('重复开窗观测（只记录、不拦截）', () => {
     expect(value.duplicate_of).toBeUndefined()
   })
 })
+
+describe('origin 级并发上限（安全阀，不排队）', () => {
+  function cappedDeps(store: MemoryRunStore, limit: number): { deps: OpenWindowDeps; calls: { fork: number; create: number } } {
+    const { opener, calls } = makeOpener({ registryProject: { cwd: '/ws' } })
+    const { port } = makeDelivery()
+    let index = 0
+    return {
+      deps: {
+        ...makeDeps({ opener, delivery: port, runStore: store }),
+        resolveWindowKey: (exec) => (exec as { agent: { id: string } }).agent.id,
+        newRunId: () => `run-${++index}`,
+        maxActiveRunsPerOrigin: limit,
+      },
+      calls: { get fork() { return calls.fork.length }, get create() { return calls.create.length } },
+    }
+  }
+
+  async function activeRun(store: MemoryRunStore, over: Partial<RunRecord> = {}): Promise<void> {
+    await store.create({
+      runId: `run-active-${store.records.size}`,
+      scenario: 'branch',
+      originSessionId: ORIGIN,
+      childSessionId: `child-${store.records.size}`,
+      mode: 'fork',
+      openKey: 'k-active',
+      status: 'running',
+      callbackArmed: true,
+      createdAt: 1,
+      updatedAt: 1,
+      ...over,
+    })
+  }
+
+  it('达到上限：拒绝且不建会话、不落 run', async () => {
+    const store = new MemoryRunStore()
+    await activeRun(store)
+    await activeRun(store)
+    const { deps, calls } = cappedDeps(store, 2)
+
+    await expect(openWindow(deps, { scenario: 'branch', seedText: '再开一个' }, EXEC))
+      .rejects.toMatchObject({ code: 'WINDOW_ORIGIN_BUSY' })
+    expect(calls.fork).toBe(0)
+    expect(calls.create).toBe(0)
+    expect(store.records.size).toBe(2)
+  })
+
+  it('错误读数带 active / limit / active_run_ids，便于模型自己收口', async () => {
+    const store = new MemoryRunStore()
+    await activeRun(store, { runId: 'run-a' })
+    const { deps } = cappedDeps(store, 1)
+    try {
+      await openWindow(deps, { scenario: 'branch', seedText: 'x' }, EXEC)
+      throw new Error('should have thrown')
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'WINDOW_ORIGIN_BUSY', details: { active: 1, limit: 1 } })
+      expect((error as { details?: { active_run_ids?: string[] } }).details?.active_run_ids).toEqual(['run-a'])
+    }
+  })
+
+  it('终态 / 已 stop / 别人的 run 都不占额度', async () => {
+    const store = new MemoryRunStore()
+    await activeRun(store, { runId: 'run-done', status: 'completed' })
+    await activeRun(store, { runId: 'run-stopped', lifecycle: { state: 'stopped', at: 1 } })
+    await activeRun(store, { runId: 'run-other', originSessionId: 'session-other' })
+    const { deps } = cappedDeps(store, 1)
+
+    const value = await openWindow(deps, { scenario: 'branch', seedText: 'x' }, EXEC)
+    expect(value.success).toBe(true)
+  })
+
+  it('上限之下照常开窗；continuation 不受额度影响', async () => {
+    const store = new MemoryRunStore()
+    await activeRun(store)
+    const { deps } = cappedDeps(store, 2)
+
+    const branch = await openWindow(deps, { scenario: 'branch', seedText: 'a' }, EXEC)
+    expect(branch.success).toBe(true)
+
+    // 此时 branch 已到 2 条上限；continuation 没有 run，不该被额度挡住。
+    const continuation = await openWindow(deps, { scenario: 'continuation', seedText: '接手' }, EXEC)
+    expect(continuation.success).toBe(true)
+    expect(continuation.run_id).toBeUndefined()
+  })
+})

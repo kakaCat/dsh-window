@@ -33,6 +33,7 @@ import type {
 } from './ports.js'
 import { applyWindowInheritance, presetInheritanceOf, readWindowProfile } from './windowInherit.js'
 import { branchContractText } from './branchContracts.js'
+import { activeRunsOf, assertCapacity, DEFAULT_MAX_ACTIVE_RUNS_PER_ORIGIN } from './runCapacity.js'
 import { execCwd } from './execView.js'
 import {
   buildTopicSeedAddendum,
@@ -150,24 +151,23 @@ export function requestKeyOf(origin: string, input: NormalizedOpenWindowInput): 
  *
  * 任何读失败都当作「没有重复」：观测探针不能影响建窗。
  */
+/** 在一份已取出的活动 run 里找同源同键者（纯函数，便于与额度检查共用一次读取）。 */
+export function duplicatesOf(active: RunRecord[], origin: string, openKey: string): string[] {
+  if (openKey.length === 0) return []
+  return active
+    .filter((run) => run.originSessionId === origin && run.openKey === openKey)
+    .map((run) => run.runId)
+    .slice(0, 5)
+}
+
+/** 自带一次读取的版本；读不到就当没有重复（观测不阻断建窗）。 */
 export async function findActiveDuplicates(
   deps: WindowDeps,
   origin: string,
   openKey: string,
 ): Promise<string[]> {
-  const store = deps.runStore
-  if (store === undefined || !store.available() || openKey.length === 0) return []
   try {
-    const runs = await store.list()
-    return runs
-      .filter((run) => run.originSessionId === origin && run.openKey === openKey)
-      .filter((run) => run.status === 'pending' || run.status === 'running')
-      .filter((run) => {
-        const state = run.lifecycle?.state
-        return state !== 'stopped' && state !== 'orphaned' && state !== 'drained'
-      })
-      .map((run) => run.runId)
-      .slice(0, 5)
+    return duplicatesOf(await activeRunsOf(deps, origin), origin, openKey)
   } catch {
     return []
   }
@@ -255,6 +255,10 @@ export async function openWindow(
   if (seedDelivery === undefined) {
     reject('WINDOW_OPEN_UNAVAILABLE', 'window_open 未执行：未装配跨窗口投递能力，无法投递 seed')
   }
+  // branch 的两件前置都基于同一份「本窗口当前活动 run」：并发额度与重复开窗观测。
+  // 都在创建会话之前判定：超限时有额度拒绝，且不产生任何会话/run/seed。
+  let openKey: string | undefined
+  let duplicateOf: string[] | undefined
   if (input.scenario === 'branch') {
     const runStore = deps.runStore
     if (runStore === undefined || !runStore.available()) {
@@ -263,6 +267,16 @@ export async function openWindow(
         'window_open 未执行：branch 运行记录存储不可用，窗口未创建、seed 未投递',
       )
     }
+    let active: RunRecord[] = []
+    try {
+      active = await activeRunsOf(deps, origin)
+    } catch {
+      active = []
+    }
+    assertCapacity(active, deps.maxActiveRunsPerOrigin ?? DEFAULT_MAX_ACTIVE_RUNS_PER_ORIGIN)
+    openKey = requestKeyOf(origin, input)
+    const duplicates = duplicatesOf(active, origin, openKey)
+    if (duplicates.length > 0) duplicateOf = duplicates
   }
 
   // 目标工作区必须在创建会话之前解析：未命中/歧义都不建窗，也不退回源工作区。
@@ -422,16 +436,6 @@ export async function openWindow(
     }
   }
   const topic = topicContext
-
-  // 重复开窗观测：同源同内容且仍有活动 run 时记下来，但**不拦截**本次建窗。
-  // 先观测再决策：真实发生率不足以支撑「按内容去重」这种可能误杀并行分支的规则。
-  let openKey: string | undefined
-  let duplicateOf: string[] | undefined
-  if (input.scenario === 'branch') {
-    openKey = requestKeyOf(origin, input)
-    const active = await findActiveDuplicates(deps, origin, openKey)
-    if (active.length > 0) duplicateOf = active
-  }
 
   let run: RunRecord | undefined
   if (input.scenario === 'branch') {

@@ -12,6 +12,7 @@ import { reasonOf, reject } from '../shared/errors.js'
 import type { DispatchTaskInput, DispatchTaskValue, RunRecord, WindowDeps } from './ports.js'
 import { assertSchemaContract } from './openWindow.js'
 import { branchContractText } from './branchContracts.js'
+import { assertOriginCapacity } from './runCapacity.js'
 
 /** 追加任务 seed 正文。 */
 export function buildDispatchSeedText(seedText: string, runId: string): string {
@@ -67,6 +68,8 @@ export async function dispatchTask(
   if (delivery === undefined) {
     reject('WINDOW_OPEN_UNAVAILABLE', 'window_dispatch 未执行：未装配跨窗口投递能力')
   }
+  // 与 window_open 共用同一个 origin 级并发额度；超限时不建 run、不投递 seed。
+  await assertOriginCapacity(deps, origin)
 
   return await store.withLock(input.toWindow, async () => {
     const runs = await store.list()

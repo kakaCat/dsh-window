@@ -131,3 +131,28 @@ describe('window_dispatch', () => {
     expect(second.run_id).toBe('run-new-2')
   })
 })
+
+describe('window_dispatch 的 origin 级并发上限', () => {
+  it('达到上限时拒绝派单：不建新 run、不投递 seed', async () => {
+    const store = new MemoryRunStore()
+    await store.create(record()) // 已完成的一条，构成 origin→CHILD 的委派关系
+    await store.create(record({ runId: 'run-active', childSessionId: 'session-other-child', status: 'running', result: undefined }))
+    const { port, calls } = makeDelivery(true)
+    const deps = { ...makeDeps(store, port), maxActiveRunsPerOrigin: 1 }
+
+    await expect(dispatchTask(deps, { toWindow: CHILD, seedText: '再来一个' }, exec(ORIGIN)))
+      .rejects.toMatchObject({ code: 'WINDOW_ORIGIN_BUSY' })
+    expect(calls).toEqual([])
+    expect((await store.list())).toHaveLength(2)
+  })
+
+  it('上限之下的派单照常', async () => {
+    const store = new MemoryRunStore()
+    await store.create(record())
+    const { port } = makeDelivery(true)
+    const deps = { ...makeDeps(store, port), maxActiveRunsPerOrigin: 2 }
+
+    const value = await dispatchTask(deps, { toWindow: CHILD, seedText: '再来一个' }, exec(ORIGIN))
+    expect(value.success).toBe(true)
+  })
+})
