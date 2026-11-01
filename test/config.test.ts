@@ -15,8 +15,16 @@ describe('配置校验', () => {
       waitPollMs: 200,
       leaseMinMs: 1_000,
       leaseMaxMs: 24 * 60 * 60 * 1000,
+      callbackRetryMs: 2_000,
+      activityTouchMs: 30_000,
+      callbackGraceMs: 60_000,
     })
     expect(resolveConfig({ leaseMinMs: 5_000, leaseMaxMs: 10_000 })).toMatchObject({ leaseMinMs: 5_000, leaseMaxMs: 10_000 })
+    expect(resolveConfig({ callbackRetryMs: 500, activityTouchMs: 5_000, callbackGraceMs: 2_000 })).toMatchObject({
+      callbackRetryMs: 500,
+      activityTouchMs: 5_000,
+      callbackGraceMs: 2_000,
+    })
   })
 
   it('租约上下限倒挂也响亮失败', () => {

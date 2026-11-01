@@ -105,6 +105,8 @@ export function defineWindowOpenTool(deps: OpenWindowDeps) {
           topic_scope: { type: 'string', description: 'Topic scope used: project or global.' },
           topic_revision: { type: 'integer', description: 'Topic revision registered at open time (used as base_revision when completing).' },
           callback_armed: { type: 'boolean', description: 'Always false for continuation; true for branch after the seed is delivered (the origin will then receive the callback).' },
+          duplicate_of: { type: 'array', items: { type: 'string' }, description: 'Branch only: active runs from this window with the same content key. Observation only — this window was still created and is not blocked.' },
+          duplicate_note: { type: 'string', description: 'What to do when duplicate_of is present.' },
           delivery: {
             type: 'object',
             additionalProperties: false,

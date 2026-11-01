@@ -20,6 +20,7 @@ import { defineWindowListTool } from './tools/windowDiscoverTools.js'
 import { defineWindowSendTool } from './tools/windowControlTools.js'
 import { defineWindowOpenTool } from './tools/windowOpenTool.js'
 import { drainLifecycle, reconcileRuns } from './application/lifecycle.js'
+import { startWindowObservers } from './application/windowObservers.js'
 import { createWindowRuntime, provideWindowService, registerToolRow, type LoggerLike, type PluginContextLike } from './runtime.js'
 import { resolveConfig, type WindowConfig } from './config.js'
 
@@ -52,14 +53,21 @@ export function apply(ctx: Context, config: Config = {}): void {
     defineWindowListTool(runtime.deps),
   ], resolved, DIALOGUE_TOOLS)
 
+  // 观测接线：心跳（lastTurnAt）与读回执（readAt）+ 回调自动重试调度。
+  // 只观测、不完成：普通回合结束永远不会触发 window_complete（见反向探针）。
+  // 只有本行接管观测、对账与 drain：管控组 / 协作组重复跑会重复写心跳与重复投递。
+  const observers = startWindowObservers(runtime.deps, logger ?? undefined)
+
   // 生命周期接线：宿主事件可用则订阅，不可用则只在启动时对账一次，并如实记录。
-  // 只有本行接管对账与 drain：管控组 / 协作组重复跑会重复标记与重复投递。
   const anyCtx = ctx as unknown as PluginContextLike
   const runReconcile = (): void => {
     void reconcileRuns(runtime.deps).then((summary) => {
-      if (summary.orphaned.length > 0 || summary.redelivered.length > 0 || summary.cleaned > 0) {
+      const receipts = summary.receipts
+      if (summary.orphaned.length > 0 || summary.redelivered.length > 0 || summary.cleaned > 0
+        || receipts?.read.length || receipts?.redelivered.length) {
         logger?.info?.(`生命周期对账：orphaned=${summary.orphaned.length} redelivered=${summary.redelivered.length}`
-          + ` cleaned=${summary.cleaned} failures=${summary.failures.length}`)
+          + ` cleaned=${summary.cleaned} failures=${summary.failures.length}`
+          + ` read=${receipts?.read.length ?? 0} requeued=${receipts?.redelivered.length ?? 0}`)
       }
     }).catch((error: unknown) => {
       logger?.warn?.(`生命周期对账失败：${error instanceof Error ? error.message : String(error)}`)
@@ -72,6 +80,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     anyCtx.effect(
       () => async () => {
         try {
+          observers.stop()
           await drainLifecycle(runtime.deps)
         } catch {
           // 卸载路径不抛：drain 内部已按 run 粒度容错。

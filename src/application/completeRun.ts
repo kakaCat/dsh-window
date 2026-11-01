@@ -6,7 +6,6 @@
  *
  * @module dsh-window/application/completeRun
  */
-import { RESULT_KIND } from '../shared/protocol.js'
 import { reasonOf, reject } from '../shared/errors.js'
 import type {
   CompleteRunInput,
@@ -21,6 +20,7 @@ import type {
   TopicRef,
   WindowDeps,
 } from './ports.js'
+import { attemptCallback, formatCallbackText, withNextAttempt } from './callbackDelivery.js'
 import {
   boundTopicSummary,
   generateCompletionId,
@@ -130,66 +130,8 @@ async function locateActiveRun(deps: WindowDeps, caller: string, runId?: string)
   return active[0]
 }
 
-/** 结果回调正文。 */
-export function formatCallbackText(run: RunRecord, result: RunResult): string {
-  const topicLines = run.topicId === undefined
-    ? []
-    : [
-        `topic_id: ${run.topicId}`,
-        ...(result.completionEntryId === undefined ? [] : [`completion_entry_id: ${result.completionEntryId}`]),
-        ...(result.topicRevision === undefined ? [] : [`topic_revision: ${result.topicRevision}`]),
-      ]
-  return [
-    '[DSH Window 分支结果]',
-    `run_id: ${run.runId}`,
-    `分支窗口: ${run.childSessionId}`,
-    `结果状态: ${result.status}`,
-    ...topicLines,
-    '---',
-    result.content,
-    '---',
-    '这是插件投递的续跑结果，不是用户新指令。',
-  ].join('\n')
-}
-
-/** 投递一次回调；永不抛，失败收口为 callback=state。 */
-export async function attemptCallback(
-  deps: WindowDeps,
-  run: RunRecord,
-  result: RunResult,
-  attempts: number,
-): Promise<RunCallbackState> {
-  const callbackId = run.callback?.callbackId ?? `result-${run.runId}`
-  const delivery = deps.seedDelivery
-  if (delivery === undefined) {
-    return { status: 'failed', callbackId, attempts, reason: '未装配跨窗口投递能力（seedDelivery）' }
-  }
-  let message: unknown
-  try {
-    const created = delivery.createMessage({
-      text: formatCallbackText(run, result),
-      kind: RESULT_KIND,
-      scenario: 'branch',
-      runId: run.runId,
-      messageId: callbackId,
-      // FR-7：回调来源必须能对账（哪个 child 的完成、哪一个 callbackId）。
-      childSessionId: run.childSessionId,
-      callbackId,
-    })
-    message = created.message
-  } catch (error: unknown) {
-    return { status: 'failed', callbackId, attempts, reason: `构造回调消息失败：${reasonOf(error)}` }
-  }
-  try {
-    const sent = await delivery.deliver(run.originSessionId, message)
-    if (sent.delivered) {
-      return { status: 'delivered', callbackId, attempts, deliveredAt: deps.now() }
-    }
-    return { status: 'failed', callbackId, attempts, reason: sent.reason ?? '投递失败（原因未知）' }
-  } catch (error: unknown) {
-    return { status: 'failed', callbackId, attempts, reason: `投递回调失败：${reasonOf(error)}` }
-  }
-}
+/** 兼容导出：投递与正文构造已移到 callbackDelivery（重试与对账共用同一实现）。 */
+export { attemptCallback, formatCallbackText }
 
 /** 完成一个 branch run：先落结果，再投递回调。 */
 export async function completeRun(
@@ -318,7 +260,10 @@ export async function completeRun(
       }
     }
 
-    let callback = await attemptCallback(deps, { ...run, result, callback: { status: 'pending', callbackId, attempts: 0 } }, result, 1)
+    let callback = withNextAttempt(
+      await attemptCallback(deps, { ...run, result, callback: { status: 'pending', callbackId, attempts: 0 } }, result, 1),
+      deps.now(),
+    )
     try {
       await store.update(run.runId, { callback, lastActivityAt: deps.now(), updatedAt: deps.now() })
     } catch (error: unknown) {
@@ -386,7 +331,9 @@ export async function getRunStatus(deps: WindowDeps, runId: string, exec: unknow
     ...(control === undefined ? {} : { control }),
     ...(messages === undefined ? {} : { messages }),
     callback: callbackOf(run),
+    ...(run.duplicateOf === undefined ? {} : { duplicate_of: run.duplicateOf }),
     last_activity_at: run.lastActivityAt ?? run.updatedAt,
+    ...(run.lastTurnAt === undefined ? {} : { last_turn_at: run.lastTurnAt }),
     created_at: run.createdAt,
     updated_at: run.updatedAt,
   }
@@ -429,11 +376,14 @@ export async function retryCallback(
     }
     const callbackId = existing.callbackId ?? `result-${run.runId}`
     const attempts = existing.attempts + 1
-    let callback = await attemptCallback(
-      deps,
-      { ...run, callback: { ...existing, callbackId, attempts } },
-      run.result,
-      attempts,
+    let callback = withNextAttempt(
+      await attemptCallback(
+        deps,
+        { ...run, callback: { ...existing, callbackId, attempts } },
+        run.result,
+        attempts,
+      ),
+      deps.now(),
     )
     try {
       await store.update(runId, { callback, lastActivityAt: deps.now(), updatedAt: deps.now() })

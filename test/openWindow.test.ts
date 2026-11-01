@@ -520,3 +520,76 @@ describe('跨工作区开窗（target_workspace）', () => {
     })).toThrowError(WindowError)
   })
 })
+
+describe('重复开窗观测（只记录、不拦截）', () => {
+  function counterDeps(store: MemoryRunStore): OpenWindowDeps {
+    const { opener } = makeOpener()
+    const { port } = makeDelivery()
+    let index = 0
+    return {
+      ...makeDeps({ opener, delivery: port, runStore: store }),
+      // makeDeps 的 resolveWindowKey 是固定 ORIGIN；这里要按真实 exec 取，才能测「不同 origin」。
+      resolveWindowKey: (exec) => (exec as { agent: { id: string } }).agent.id,
+      newRunId: () => `run-${++index}`,
+    }
+  }
+
+  it('同源同 seed 的第二次开窗：照常建窗，但回执带 duplicate_of 与处置建议', async () => {
+    const store = new MemoryRunStore()
+    const deps = counterDeps(store)
+    const first = await openWindow(deps, { scenario: 'branch', seedText: '同样的任务' }, EXEC)
+    expect(first.duplicate_of).toBeUndefined()
+    expect((await store.get(first.run_id!))?.openKey).toBeDefined()
+
+    const second = await openWindow(deps, { scenario: 'branch', seedText: '同样的任务' }, EXEC)
+    expect(second.success).toBe(true)
+    expect(second.window_key).toBeDefined()
+    expect(second.duplicate_of).toEqual([first.run_id!])
+    expect(second.duplicate_note).toContain('未被拦截')
+    expect((await store.get(second.run_id!))?.duplicateOf).toEqual([first.run_id!])
+    // 两条 run 都在：观测不改变既有行为。
+    expect((await store.list())).toHaveLength(2)
+  })
+
+  it('seed 不同 / origin 不同：不算重复', async () => {
+    const store = new MemoryRunStore()
+    const deps = counterDeps(store)
+    await openWindow(deps, { scenario: 'branch', seedText: '任务 A' }, EXEC)
+
+    const differentSeed = await openWindow(deps, { scenario: 'branch', seedText: '任务 B' }, EXEC)
+    expect(differentSeed.duplicate_of).toBeUndefined()
+
+    const otherOrigin = await openWindow(
+      deps,
+      { scenario: 'branch', seedText: '任务 A' },
+      { agent: { id: 'session-other', status: 'running' } },
+    )
+    expect(otherOrigin.duplicate_of).toBeUndefined()
+  })
+
+  it('第一条 run 已终态时不再报重复（重跑同一个任务是合法的）', async () => {
+    const store = new MemoryRunStore()
+    const deps = counterDeps(store)
+    const first = await openWindow(deps, { scenario: 'branch', seedText: '任务 A' }, EXEC)
+    await store.update(first.run_id!, {
+      status: 'completed',
+      result: { status: 'completed', content: '完成', completedAt: 2, completedBy: 'session-child' },
+    })
+
+    const again = await openWindow(deps, { scenario: 'branch', seedText: '任务 A' }, EXEC)
+    expect(again.duplicate_of).toBeUndefined()
+  })
+
+  it('观测探针不阻断建窗：读 run 记录失败也照常开窗', async () => {
+    class BrokenListStore extends MemoryRunStore {
+      override async list(): Promise<RunRecord[]> {
+        throw new Error('list boom')
+      }
+    }
+    const store = new BrokenListStore()
+    const deps = counterDeps(store)
+    const value = await openWindow(deps, { scenario: 'branch', seedText: '任务 A' }, EXEC)
+    expect(value.success).toBe(true)
+    expect(value.duplicate_of).toBeUndefined()
+  })
+})

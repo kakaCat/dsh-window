@@ -215,6 +215,30 @@ describe('工具回执符合 output schema', () => {
     await runTool(defineWindowInterruptTool(deps) as never, { run_id: 'run-1', mode: 'run' })
   })
 
+  it('window_list / window_wait 的 schema 覆盖 last_turn_at 与 callback.read_at（防漂移）', async () => {
+    // 回归：listRowOf 加了新字段、而 window_wait 的 output schema 没跟上时，宿主会以
+    // "is not a declared property" 拒绝整条回执——正是端到端冒烟抓到的那个错。
+    const store = new MemoryRunStore()
+    await store.create(record({
+      runId: 'run-1',
+      status: 'completed',
+      lastTurnAt: 5,
+      result: { status: 'completed', content: 'ok', completedAt: 6, completedBy: CHILD },
+      callback: { status: 'delivered', callbackId: 'result-run-1', attempts: 1, deliveredAt: 6, readAt: 7 },
+    }))
+    const deps = makeDeps({ runStore: store, waitPollMs: 20, agentControl: control() })
+
+    const listed = await runTool(defineWindowListTool(deps) as never, {})
+    const listRow = (listed['rows'] as Record<string, unknown>[])[0]!
+    expect(listRow['last_turn_at']).toBe(5)
+    expect((listRow['callback'] as Record<string, unknown>)['read_at']).toBe(7)
+
+    const waited = await runTool(defineWindowWaitTool(deps) as never, { run_ids: ['run-1'], mode: 'all', timeout_ms: 20 })
+    const waitRow = (waited['runs'] as Record<string, unknown>[])[0]!
+    expect(waitRow['last_turn_at']).toBe(5)
+    expect((waitRow['callback'] as Record<string, unknown>)['read_at']).toBe(7)
+  })
+
   it('超时 hint 与 inspect 不一致告警要真正进到模型可见文本', async () => {
     const store = new MemoryRunStore()
     await store.create(record())

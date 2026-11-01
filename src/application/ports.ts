@@ -150,6 +150,42 @@ export interface RunCallbackState {
   attempts: number
   reason?: string
   deliveredAt?: number
+  /**
+   * 观测到这条回调已被 origin 读入历史的时间。
+   *
+   * `delivered` 只代表宿主收件箱接收了消息（投递成功），不代表 origin 真的读过：
+   * 它的回合可能在把消息写进历史之前被取消，消息就静默消失了。缺省 `readAt`
+   * = 只进了收件箱或未知；对账据此决定「补投」还是「就此打住」。
+   */
+  readAt?: number
+  /** 下一次自动重试的最早时间（ms）；只对 pending/failed 有意义，读到/送达即清空。 */
+  nextAttemptAt?: number
+}
+
+/** 一条回调消息在目标会话里的位置。 */
+export type CallbackLocation = 'history' | 'inbox' | 'absent' | 'unknown'
+
+/** 宿主会话活动读数：child 的推进，或 origin 读入回调。 */
+export interface SessionActivityEvent {
+  /** 发生事件的会话 id（child 的推进，或 origin 读入回调）。 */
+  sessionId: string
+  at: number
+  /** 该事件是一条进入历史的用户消息时，携带其 `source.callbackId`。 */
+  callbackId?: string
+}
+
+/**
+ * 会话活动观测端口（只读）。
+ *
+ * 只订阅宿主事件并做只读核对，不改会话、不完成 run；实现必须永不抛。
+ */
+export interface SessionActivityPort {
+  /** 订阅 child 推进 / origin 读入回调；返回取消订阅。宿主不支持时安静降级。 */
+  watch(listener: (event: SessionActivityEvent) => void): () => void
+  /** 对账查询：某条回调消息在目标会话的历史、收件箱，还是都不在（可安全补投）。 */
+  locate(windowKey: string, callbackId: string): Promise<CallbackLocation>
+  /** 释放订阅。可选。 */
+  dispose?(): void
 }
 
 /** 生命周期状态：active 正常；stopped = origin 主动停；orphaned = origin 不在线或超时；drained = 卸载排空。 */
@@ -206,8 +242,24 @@ export interface RunRecord {
   resultRequired?: boolean
   /** 生命周期归属；缺省视为 active。 */
   lifecycle?: RunLifecycle
+  /**
+   * 开窗请求的内容键（origin + scenario + mode + seed + title + 落点/topic 的摘要）。
+   *
+   * 只用于**观测重复开窗**：同源同键且仍有活动 run 时，新 run 会记下
+   * `duplicateOf`，但不会拦截建窗（避免误杀合法的并行分支）。缺省表示旧记录。
+   */
+  openKey?: string
+  /** 建窗时发现同源同键的活动 run（只观测、不拦截）；缺省表示没有。 */
+  duplicateOf?: string[]
   /** 最近一次 seed/guidance/控制操作或状态变化时间；旧记录缺省按 updatedAt 处理。不随每个回合刷新。 */
   lastActivityAt?: number
+  /**
+   * child 最近一次真实推进（回合/会话事件）的时间；由宿主事件驱动、按 run 节流写入。
+   *
+   * 与 `lastActivityAt` 分工：后者是「写入/投递时间」，会被插件自己的投递重置，
+   * 不能当停滞判据（ADR-0004 §三）；前者只随 child 的消费/推进刷新。缺省表示尚无观测。
+   */
+  lastTurnAt?: number
   createdAt: number
   updatedAt: number
 }
@@ -221,10 +273,14 @@ export interface RunIndexRow {
   runStatus: RunStatus
   callbackStatus: RunCallbackState['status']
   callbackAttempts: number
+  /** 回调被 origin 读入历史的时间；缺省 = 只进收件箱或尚未读过。 */
+  callbackReadAt?: number
   /** 生命周期状态（§7.5）；缺省视为 active。 */
   lifecycleState?: RunLifecycle['state']
   topicId?: string
   lastActivityAt: number
+  /** child 最近一次真实推进时间；缺省表示尚无观测（见 RunRecord.lastTurnAt）。 */
+  lastTurnAt?: number
   createdAt: number
   updatedAt: number
 }
@@ -1140,6 +1196,14 @@ export interface WindowDeps {
   claimLeaseBounds?: { minMs: number; maxMs: number }
   /** origin 是否仍在线；缺失时只按超时判定 orphan。 */
   isWindowAlive?(windowKey: string): boolean
+  /** 宿主会话活动观测（心跳 / 读回执）；缺失时两者都安静降级，不影响工具面。 */
+  sessionActivity?: SessionActivityPort
+  /** 回调自动重试的扫描间隔；缺省 2s。 */
+  callbackRetryMs?: number
+  /** child 推进写 `lastTurnAt` 的最小节流间隔；缺省 30s。 */
+  activityTouchMs?: number
+  /** 回调已送达但未证实被读过时，多久之后才允许对账补投；缺省 60s。 */
+  callbackGraceMs?: number
   now(): number
   newRunId(): string
 }
@@ -1246,7 +1310,11 @@ export interface RunStatusValue {
   /** guidance 留痕（§7.5，有界）。 */
   messages?: RunMessage[]
   callback: RunCallbackState
+  /** 建窗时发现的同源同内容活动 run（观测用；不表示本次被拦截）。 */
+  duplicate_of?: string[]
   last_activity_at: number
+  /** child 最近一次真实推进时间（宿主事件驱动）；缺省表示尚无观测。 */
+  last_turn_at?: number
   created_at: number
   updated_at: number
 }
@@ -1269,11 +1337,35 @@ export interface WindowListRow {
   run_status: RunStatus
   /** 生命周期归属；缺省视为 active。 */
   lifecycle_state?: RunLifecycle['state']
-  callback: { status: RunCallbackState['status']; attempts: number; reason?: string }
+  // 工具回执用 snake_case（与 schema、其它字段一致）：读回执是 `read_at`。
+  callback: { status: RunCallbackState['status']; attempts: number; reason?: string; read_at?: number }
   topic_id?: string
   last_activity_at: number
+  /** child 最近一次真实推进时间；缺省表示尚无观测。 */
+  last_turn_at?: number
   created_at: number
   updated_at: number
+}
+
+/**
+ * `window_list` 的「需要人看一眼」聚合。
+ *
+ * 统计范围是本窗口可见的全部 run（不受 status / topic / 时间窗 / 分页过滤影响），
+ * 所以翻到第二页也不会把问题藏起来。全部为 0 时不需要任何人上手。
+ */
+export interface WindowListAttention {
+  /** 回调投递失败、且还没被判成 unknown 的 run 数。 */
+  failed_callbacks: number
+  /** 状态未知（可能已送达）的 run 数；只能人工对账，不能直接重试。 */
+  unknown_callbacks: number
+  /** 已送达但 origin 从未读入历史（`delivered` 且无 `read_at`）。 */
+  unread_delivered: number
+  /** 被生命周期判成 orphaned 的 run 数。 */
+  orphaned: number
+  /** 以上之和（同一 run 按最高优先级计一次）。 */
+  total: number
+  /** 一句话行动建议；total=0 时缺省。 */
+  hint?: string
 }
 
 /** `window_list` 回执。 */
@@ -1281,6 +1373,7 @@ export interface WindowListValue {
   rows: WindowListRow[]
   next_cursor?: string
   total: number
+  attention: WindowListAttention
 }
 
 /** `window_wait` 输入。 */
@@ -1347,6 +1440,9 @@ export interface OpenWindowValue {
   /** 开窗口时读取并登记的主题 revision。 */
   topic_revision?: number
   callback_armed: boolean
+  /** 同源同内容的既有活动 run（观测用，本次仍照常建窗）。 */
+  duplicate_of?: string[]
+  duplicate_note?: string
   delivery?: { delivered: boolean; kind: string; reason?: string; run_error?: string; topic_note?: string }
   inheritance: WindowInheritance
   degraded_note: string

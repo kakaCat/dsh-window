@@ -10,6 +10,7 @@ import { reasonOf, reject } from '../shared/errors.js'
 import type {
   RunIndexRow,
   WindowDeps,
+  WindowListAttention,
   WindowListInput,
   WindowListRow,
   WindowListValue,
@@ -50,10 +51,15 @@ export function listRowOf(row: RunIndexRow): WindowListRow {
     child_window_key: row.childSessionId,
     run_status: row.runStatus,
     ...(row.lifecycleState === undefined ? {} : { lifecycle_state: row.lifecycleState }),
-    callback: { status: row.callbackStatus, attempts: row.callbackAttempts },
+    callback: {
+      status: row.callbackStatus,
+      attempts: row.callbackAttempts,
+      ...(row.callbackReadAt === undefined ? {} : { read_at: row.callbackReadAt }),
+    },
     ...(row.topicId === undefined ? {} : { topic_id: row.topicId }),
     // 兜底：旧索引行可能缺 lastActivityAt（口径见 RunRecord.lastActivityAt 文档）。
     last_activity_at: row.lastActivityAt ?? row.updatedAt ?? row.createdAt,
+    ...(row.lastTurnAt === undefined ? {} : { last_turn_at: row.lastTurnAt }),
     created_at: row.createdAt,
     updated_at: row.updatedAt,
   }
@@ -81,13 +87,16 @@ export async function listRuns(
     reject('WINDOW_RUN_STORE_UNAVAILABLE', `window_list 未执行：读取 run 索引失败（${reasonOf(error)}）`)
   }
 
+  // 注意力聚合：先按「本窗口可见」圈定，再看状态——不受后面的筛选与分页影响。
+  const visible = rows.filter((row) => row.originSessionId === caller || row.childSessionId === caller)
+  const attention = attentionOf(visible)
+
   const status = raw.status ?? 'all'
   if (status !== 'all' && status !== 'active' && status !== 'terminal') {
     reject('WINDOW_INVALID_INPUT', `window_list 未执行：status 非法（${String(raw.status)}）`)
   }
 
-  const filtered = rows
-    .filter((row) => row.originSessionId === caller || row.childSessionId === caller)
+  const filtered = visible
     .filter((row) => {
       if (status === 'active') return isActive(row)
       if (status === 'terminal') return !isActive(row)
@@ -111,6 +120,45 @@ export async function listRuns(
   return {
     rows: page.map(listRowOf),
     total: filtered.length,
+    attention,
     ...(next === undefined ? {} : { next_cursor: next }),
+  }
+}
+
+/** 把「需要人处理」的 run 折算成计数 + 一句话建议。 */
+export function attentionOf(rows: RunIndexRow[]): WindowListAttention {
+  let failed = 0
+  let unknown = 0
+  let unread = 0
+  let orphaned = 0
+  let total = 0
+  for (const row of rows) {
+    const isOrphaned = row.lifecycleState === 'orphaned'
+    let counted = false
+    if (row.callbackStatus === 'unknown') {
+      unknown += 1
+      counted = true
+    } else if (row.callbackStatus === 'failed') {
+      failed += 1
+      counted = true
+    } else if (row.callbackStatus === 'delivered' && row.callbackReadAt === undefined) {
+      unread += 1
+      counted = true
+    }
+    if (isOrphaned) orphaned += 1
+    if (counted || isOrphaned) total += 1
+  }
+  const parts: string[] = []
+  if (unknown > 0) parts.push(`${unknown} 条回调状态未知（需人工对账，勿直接重试）`)
+  if (failed > 0) parts.push(`${failed} 条回调未送达（会自动退避重投，也可 window_retry_callback）`)
+  if (unread > 0) parts.push(`${unread} 条回调已送达但 origin 未读（缺 read_at）`)
+  if (orphaned > 0) parts.push(`${orphaned} 条 run 已 orphaned`)
+  return {
+    failed_callbacks: failed,
+    unknown_callbacks: unknown,
+    unread_delivered: unread,
+    orphaned,
+    total,
+    ...(parts.length === 0 ? {} : { hint: parts.join('；') }),
   }
 }

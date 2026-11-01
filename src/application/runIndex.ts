@@ -17,9 +17,11 @@ export function runIndexRowOf(record: RunRecord): RunIndexRow {
     runStatus: record.status,
     callbackStatus: record.callback?.status ?? 'not_armed',
     callbackAttempts: record.callback?.attempts ?? 0,
+    ...(record.callback?.readAt === undefined ? {} : { callbackReadAt: record.callback.readAt }),
     ...(record.lifecycle === undefined ? {} : { lifecycleState: record.lifecycle.state }),
     ...(record.topicId === undefined ? {} : { topicId: record.topicId }),
     lastActivityAt: record.lastActivityAt ?? record.updatedAt,
+    ...(record.lastTurnAt === undefined ? {} : { lastTurnAt: record.lastTurnAt }),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   }

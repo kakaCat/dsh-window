@@ -5,6 +5,7 @@
  *
  * @module dsh-window/application/openWindow
  */
+import { createHash } from 'node:crypto'
 import {
   DEGRADED_NOTE,
   SEED_KIND,
@@ -119,6 +120,55 @@ export function assertSchemaContract(
     guard.assertObjectSchema(input.outputSchema)
   } catch (error: unknown) {
     reject('WINDOW_OUTPUT_SCHEMA_INVALID', `window_open 未执行：output_schema 非法（${reasonOf(error)}）`)
+  }
+}
+
+/**
+ * 开窗请求的内容键：同源 + 同场景/模式 + 同 seed（及落点、topic）视为同一请求。
+ *
+ * 只用于观测重复开窗，不参与任何拦截或去重决策。
+ */
+export function requestKeyOf(origin: string, input: NormalizedOpenWindowInput): string {
+  return createHash('sha256')
+    .update(JSON.stringify([
+      origin,
+      input.scenario,
+      input.mode,
+      input.seedText,
+      input.title ?? '',
+      input.targetWorkspace ?? '',
+      input.topicId ?? '',
+      input.topicScope ?? '',
+    ]))
+    .digest('hex')
+    .slice(0, 20)
+}
+
+/**
+ * 找出同源同键、仍然活动的 run（只读、永不抛）。
+ *
+ * 任何读失败都当作「没有重复」：观测探针不能影响建窗。
+ */
+export async function findActiveDuplicates(
+  deps: WindowDeps,
+  origin: string,
+  openKey: string,
+): Promise<string[]> {
+  const store = deps.runStore
+  if (store === undefined || !store.available() || openKey.length === 0) return []
+  try {
+    const runs = await store.list()
+    return runs
+      .filter((run) => run.originSessionId === origin && run.openKey === openKey)
+      .filter((run) => run.status === 'pending' || run.status === 'running')
+      .filter((run) => {
+        const state = run.lifecycle?.state
+        return state !== 'stopped' && state !== 'orphaned' && state !== 'drained'
+      })
+      .map((run) => run.runId)
+      .slice(0, 5)
+  } catch {
+    return []
   }
 }
 
@@ -372,6 +422,16 @@ export async function openWindow(
   }
   const topic = topicContext
 
+  // 重复开窗观测：同源同内容且仍有活动 run 时记下来，但**不拦截**本次建窗。
+  // 先观测再决策：真实发生率不足以支撑「按内容去重」这种可能误杀并行分支的规则。
+  let openKey: string | undefined
+  let duplicateOf: string[] | undefined
+  if (input.scenario === 'branch') {
+    openKey = requestKeyOf(origin, input)
+    const active = await findActiveDuplicates(deps, origin, openKey)
+    if (active.length > 0) duplicateOf = active
+  }
+
   let run: RunRecord | undefined
   if (input.scenario === 'branch') {
     const runId = deps.newRunId()
@@ -386,6 +446,8 @@ export async function openWindow(
       ...(input.title === undefined ? {} : { title: input.title }),
       ...(input.topicId === undefined ? {} : { topicId: input.topicId }),
       ...(topic === undefined ? {} : { startedTopicRevision: topic.revision }),
+      ...(openKey === undefined ? {} : { openKey }),
+      ...(duplicateOf === undefined ? {} : { duplicateOf }),
       status: 'pending',
       callbackArmed: false,
       callback: { status: 'not_armed', attempts: 0 },
@@ -425,7 +487,7 @@ export async function openWindow(
     text: seedText,
     kind: SEED_KIND,
     scenario: input.scenario,
-    ...(run === undefined ? {} : { runId: run.runId }),
+    ...(run === undefined ? {} : { runId: run.runId, messageId: `seed-${run.runId}` }),
   })
 
   let delivered = false
@@ -501,6 +563,12 @@ export async function openWindow(
     ...(input.topicId === undefined ? {} : { topic_scope: input.topicScope ?? 'project' }),
     ...(topic === undefined ? {} : { topic_revision: topic.revision }),
     callback_armed: callbackArmed,
+    ...(duplicateOf === undefined
+      ? {}
+      : {
+          duplicate_of: duplicateOf,
+          duplicate_note: `同源同内容已有活动 run（${duplicateOf.join('、')}）：本次仍照常建窗，未被拦截；若确认是重复请求，可用 window_interrupt(mode='run') 收口多余的那条。`,
+        }),
     delivery,
     inheritance,
     degraded_note: topicNote === undefined ? DEGRADED_NOTE : `${DEGRADED_NOTE} ${topicNote}`,

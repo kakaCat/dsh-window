@@ -15,6 +15,7 @@ import { FsRunStore } from './adapters/runStore.js'
 import { FsTopicStore } from './adapters/topicStore.js'
 import { JsonSchemaGuard } from './adapters/jsonSchemaGuard.js'
 import { SessionWindowInspector } from './adapters/sessionWindowInspector.js'
+import { SessionActivity } from './adapters/sessionActivity.js'
 import { SessionWindowOpener } from './adapters/sessionWindowOpener.js'
 import type { ResolvedWindowConfig } from './config.js'
 import { WindowError } from './shared/errors.js'
@@ -39,6 +40,8 @@ export interface PluginContextLike {
   provide?: (name: string, value: unknown) => unknown
   /** Cordis 生命周期清理：execute 返回的 disposer 会在插件卸载时被 await。 */
   effect?: (execute: () => unknown, label?: string) => unknown
+  /** 宿主事件订阅（session/event、agent/status 等）；返回 disposer。 */
+  on?: (event: string, handler: (...args: never[]) => void) => unknown
 }
 
 interface AgentsLike {
@@ -120,6 +123,7 @@ export function createWindowRuntime(
   const messenger = new AgentMessenger(() => agentsSvc, () => sessionControllerSvc, () => randomUUID())
   const inspector = new SessionWindowInspector(() => sessionControllerSvc, () => agentsSvc)
   const control = new AgentControl(() => agentsSvc, () => sessionControllerSvc)
+  const sessionActivity = new SessionActivity(() => ctx, () => agentsSvc, () => sessionControllerSvc)
   const schemaGuard = new JsonSchemaGuard()
   const runStore = new FsRunStore(resolved.dataRoot === undefined ? {} : { root: resolved.dataRoot })
   const topicStore = new FsTopicStore(resolved.dataRoot === undefined ? {} : { root: resolved.dataRoot })
@@ -137,6 +141,10 @@ export function createWindowRuntime(
     waitPollMs: resolved.waitPollMs,
     orphanTimeoutMs: resolved.orphanTimeoutMs,
     claimLeaseBounds: { minMs: resolved.leaseMinMs, maxMs: resolved.leaseMaxMs },
+    sessionActivity,
+    callbackRetryMs: resolved.callbackRetryMs,
+    activityTouchMs: resolved.activityTouchMs,
+    callbackGraceMs: resolved.callbackGraceMs,
     isWindowAlive: (windowKey: string): boolean => {
       let raw: unknown
       try {

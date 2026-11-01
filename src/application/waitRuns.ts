@@ -213,8 +213,10 @@ export async function waitRuns(
       : {
           hint:
             `超时只说明到点，不说明停滞：仍有 ${pending.length} 条 run 未终态。` +
-            'last_activity_at 不随回合刷新，不能作为停滞判据；要判断子窗口是否还在干活，' +
-            "用 window_inspect 看 running 与历史；必要时 window_send 追加引导，或 window_interrupt(mode='turn') 只中断当前轮（run 仍在、收件箱保留）。",
+            'last_activity_at 是写入/投递时间（会被插件自己的投递重置），不能单独作为停滞判据；' +
+            'last_turn_at 才是 child 最近一次真实推进，两者都旧才值得怀疑。' +
+            "判断子窗口是否还在干活用 window_inspect 看 running 与历史；必要时 window_send 追加引导，" +
+            "或 window_interrupt(mode='turn') 只中断当前轮（run 仍在、收件箱保留）。",
         }),
   }
 }

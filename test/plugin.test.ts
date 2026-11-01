@@ -11,6 +11,8 @@ interface FakeRuntime {
   logs: string[]
   provided: Record<string, unknown>
   effects: (() => unknown)[]
+  /** 订阅过的宿主事件名；观测只在对话组接线。 */
+  subscriptions: string[]
 }
 
 function fakeHost(runtime: FakeRuntime): { ctx: unknown; runtime: FakeRuntime } {
@@ -41,6 +43,10 @@ function fakeHost(runtime: FakeRuntime): { ctx: unknown; runtime: FakeRuntime } 
         runtime.effects.push(execute)
         return () => undefined
       },
+      on: (event: string) => {
+        runtime.subscriptions.push(event)
+        return () => undefined
+      },
     },
   }
 }
@@ -59,7 +65,7 @@ describe('Cordis 装载（三行：对话 / 管控 / 协作）', () => {
   it('对话组注册 5 个工具、provide window Host Service、并接管 drain', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-window-plugin-'))
     roots.push(root)
-    const runtime: FakeRuntime = { registered: [], logs: [], provided: {}, effects: [] }
+    const runtime: FakeRuntime = { registered: [], logs: [], provided: {}, effects: [], subscriptions: [] }
     applyDialogue(fakeHost(runtime).ctx as never, { dataRoot: root })
 
     expect(dialogueName).toBe('dsh-window')
@@ -83,12 +89,14 @@ describe('Cordis 装载（三行：对话 / 管控 / 协作）', () => {
     expect(runtime.effects).toHaveLength(1)
     expect(runtime.logs.join('')).not.toContain('ctx.effect 不可用')
 
+    // 观测接线只由对话组负责：心跳/读回执订阅这两个宿主事件。
+    expect(runtime.subscriptions).toEqual(['session/event', 'agent/status'])
   })
 
   it('管控组只注册自己的 5 个工具，不第二次 provide、不跑 drain', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-window-plugin-'))
     roots.push(root)
-    const runtime: FakeRuntime = { registered: [], logs: [], provided: {}, effects: [] }
+    const runtime: FakeRuntime = { registered: [], logs: [], provided: {}, effects: [], subscriptions: [] }
     applyControl(fakeHost(runtime).ctx as never, { dataRoot: root })
 
     expect(controlName).toBe('dsh-window/control')
@@ -102,12 +110,13 @@ describe('Cordis 装载（三行：对话 / 管控 / 协作）', () => {
     expect(runtime.logs.join('')).toContain('管控组已注册 5 个工具')
     expect(runtime.provided['window']).toBeUndefined()
     expect(runtime.effects).toHaveLength(0)
+    expect(runtime.subscriptions).toEqual([])
   })
 
   it('协作组只注册 6 个 topic 工具，不第二次 provide、不跑 drain', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-window-plugin-'))
     roots.push(root)
-    const runtime: FakeRuntime = { registered: [], logs: [], provided: {}, effects: [] }
+    const runtime: FakeRuntime = { registered: [], logs: [], provided: {}, effects: [], subscriptions: [] }
     applyTopic(fakeHost(runtime).ctx as never, { dataRoot: root })
 
     expect(topicName).toBe('dsh-window/topic')
@@ -122,12 +131,13 @@ describe('Cordis 装载（三行：对话 / 管控 / 协作）', () => {
     expect(runtime.logs.join('')).toContain('协作组已注册 6 个工具')
     expect(runtime.provided['window']).toBeUndefined()
     expect(runtime.effects).toHaveLength(0)
+    expect(runtime.subscriptions).toEqual([])
   })
 
   it('三行全开时合起来正好是原来的 16 个工具，且没有重复', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-window-plugin-'))
     roots.push(root)
-    const runtime: FakeRuntime = { registered: [], logs: [], provided: {}, effects: [] }
+    const runtime: FakeRuntime = { registered: [], logs: [], provided: {}, effects: [], subscriptions: [] }
     const host = fakeHost(runtime)
     applyDialogue(host.ctx as never, { dataRoot: root })
     applyControl(host.ctx as never, { dataRoot: root })
@@ -136,5 +146,7 @@ describe('Cordis 装载（三行：对话 / 管控 / 协作）', () => {
     const all = names(runtime)
     expect(all).toHaveLength(16)
     expect(new Set(all).size).toBe(16)
+    // 三行全开也只有对话组订阅一次，不会三份调度器重复重投。
+    expect(runtime.subscriptions).toEqual(['session/event', 'agent/status'])
   })
 })

@@ -144,7 +144,7 @@ describe('反向探针（AC-17）', () => {
     const opened = await openWindow(deps(store, port), { scenario: 'branch', seedText: '做分支任务' }, exec(ORIGIN))
     const runId = opened.run_id!
 
-    // 只投了 seed，没有任何完成信号（本用例不依赖“turn/end 事件”——插件根本不订阅宿主事件）。
+    // 只投了 seed，没有任何完成信号（订阅只喂心跳/读回执，不参与完成判定）。
     expect(await store.get(runId)).toMatchObject({ status: 'running', callbackArmed: true })
     expect((await store.get(runId))?.result).toBeUndefined()
 
@@ -157,15 +157,27 @@ describe('反向探针（AC-17）', () => {
     expect(callbacks).toEqual([])
   })
 
-  it('接线层不存在“回合结束 → 完成”的路径：index 不订阅任何宿主事件，也不调用 completeRun', async () => {
+  it('接线层不存在“回合结束 → 完成”的路径：订阅只在观测层，且观测层不能完成 run', async () => {
     // 这条是源码级反向探针：若将来有人把 turn/end（或任何宿主事件）接到自动完成上，
     // 对应断言会红——因为本插件的完成入口只有 window_complete 工具与 Host Service.complete。
+    // 订阅本身是允许的（心跳/读回执），但只许出现在观测适配器里，且不得写完成状态。
     const index = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8')
     const lifecycle = await readFile(new URL('../src/application/lifecycle.ts', import.meta.url), 'utf8')
+    const observers = await readFile(new URL('../src/application/windowObservers.ts', import.meta.url), 'utf8')
+    const activity = await readFile(new URL('../src/adapters/sessionActivity.ts', import.meta.url), 'utf8')
+    const tracker = await readFile(new URL('../src/application/runActivity.ts', import.meta.url), 'utf8')
 
-    expect(index).not.toMatch(/\.on\s*\(/) // 不订阅任何宿主事件（无 ready/dispose/turn-end 接线）
+    expect(index).not.toMatch(/\.on\s*\(/) // 接线层不直接订阅宿主事件（无 ready/dispose/turn-end 接线）
     expect(index).not.toMatch(/completeRun\s*\(/) // 接线层不直接完成 run
     expect(lifecycle).not.toMatch(/completeRun\s*\(/) // 对账/孤儿/排空不伪造完成
+
+    // 观测层：允许订阅，但只写 lastTurnAt / readAt，绝不写完成状态或结果。
+    expect(activity).toMatch(/\.on!?\s*\(/)
+    for (const source of [observers, activity, tracker]) {
+      expect(source).not.toMatch(/completeRun\s*\(/)
+      expect(source).not.toMatch(/status:\s*'completed'/)
+      expect(source).not.toMatch(/result:\s*\{/)
+    }
 
     // 强化：完成入口只在工具壳与 Host Service 里出现，二者都要求显式调用。
     const tools = await readFile(new URL('../src/tools/windowRunTools.ts', import.meta.url), 'utf8')

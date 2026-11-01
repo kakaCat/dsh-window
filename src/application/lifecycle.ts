@@ -10,7 +10,7 @@
  * @module dsh-window/application/lifecycle
  */
 import { reasonOf, reject } from '../shared/errors.js'
-import { attemptCallback } from './completeRun.js'
+import { attemptCallback, refreshCallbackReceipts, withNextAttempt, type ReceiptSummary } from './callbackDelivery.js'
 import type {
   RunCallbackState,
   RunControlEvent,
@@ -26,6 +26,8 @@ export interface ReconcileSummary {
   redelivered: string[]
   cleaned: number
   failures: { runId: string; reason: string }[]
+  /** 读回执对账汇总；宿主未装配 sessionActivity 时为空。 */
+  receipts?: ReceiptSummary
 }
 
 /** stop/orphan 汇总。 */
@@ -170,11 +172,9 @@ export async function reconcileRuns(deps: WindowDeps): Promise<ReconcileSummary>
           const currentCallback = current?.callback
           if (current?.result === undefined || currentCallback === undefined) return
           if (currentCallback.status !== 'pending' && currentCallback.status !== 'failed') return
-          const next: RunCallbackState = await attemptCallback(
-            deps,
-            current,
-            current.result,
-            currentCallback.attempts + 1,
+          const next: RunCallbackState = withNextAttempt(
+            await attemptCallback(deps, current, current.result, currentCallback.attempts + 1),
+            deps.now(),
           )
           try {
             await store.update(run.runId, { callback: next, lastActivityAt: deps.now(), updatedAt: deps.now() })
@@ -206,6 +206,13 @@ export async function reconcileRuns(deps: WindowDeps): Promise<ReconcileSummary>
         summary.failures.push({ runId: run.runId, reason: reasonOf(error) })
       }
     }
+  }
+  // 读回执对账：delivered 但没有 readAt 的回调，检查它到底在历史、收件箱，还是被丢弃。
+  // 没有 sessionActivity 端口时返回空汇总，不改变上面的既有语义。
+  try {
+    summary.receipts = await refreshCallbackReceipts(deps, now)
+  } catch (error: unknown) {
+    summary.failures.push({ runId: '-', reason: `读回执对账失败：${reasonOf(error)}` })
   }
   return summary
 }

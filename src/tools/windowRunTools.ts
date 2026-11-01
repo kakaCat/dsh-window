@@ -10,10 +10,10 @@ import type { RunCallbackState, RunResult, WindowDeps } from '../application/por
 import { RUN_TERMINAL_STATUSES } from '../shared/protocol.js'
 
 /** `window_complete` 提示词。 */
-export const WINDOW_COMPLETE_PROMPT = `Report the actual result of a branch run: persist the result first, then deliver the callback to the origin. status is the task outcome (completed, failed, or cancelled), not the turn state. content states the conclusion, verification, and artifact paths without copying the full conversation. When the run declared output_schema, completed must include a structured value that matches it; runs without a schema do not accept structured. A failed callback does not roll back the result, so retry it with window_retry_callback. An ordinary turn/end is not a completion; only this tool or a deterministic completion signal from a host plugin counts.`
+export const WINDOW_COMPLETE_PROMPT = `Report the actual result of a branch run: persist the result first, then deliver the callback to the origin. status is the task outcome (completed, failed, or cancelled), not the turn state. content states the conclusion, verification, and artifact paths without copying the full conversation. When the run declared output_schema, completed must include a structured value that matches it; runs without a schema do not accept structured. A failed callback does not roll back the result, and delivery is retried automatically with backoff (up to a minute apart); retry immediately with window_retry_callback if the origin is known to be reachable. An ordinary turn/end is not a completion; only this tool or a deterministic completion signal from a host plugin counts.`
 
 /** `window_status` 提示词。 */
-export const WINDOW_STATUS_PROMPT = `Read one branch run's status without changing it. Only the origin and the child can read it. Run status and callback status are returned separately; when a result is complete but its callback has not been delivered, callback reports failed or unknown. A run that declared output_schema also returns the schema and structured result. No other window's full conversation is returned.`
+export const WINDOW_STATUS_PROMPT = `Read one branch run's status without changing it. Only the origin and the child can read it. Run status and callback status are returned separately; when a result is complete but its callback has not been delivered, callback reports failed or unknown. callback.read_at is the proof the origin actually read the result into its history: delivered only means the inbox accepted it, and a message can be dropped before it reaches history. A run that declared output_schema also returns the schema and structured result. No other window's full conversation is returned.`
 
 /** `window_retry_callback` 提示词。 */
 export const WINDOW_RETRY_CALLBACK_PROMPT = `Retry delivery of a completed branch result to its origin window. Use it only after the result is persisted and the callback is unconfirmed; the retry reuses the original callback identity and never fabricates a new logical result. Only the origin may retry.`
@@ -39,6 +39,8 @@ const callbackProperties = {
   attempts: { type: 'integer' as const },
   reason: { type: 'string' as const },
   delivered_at: { type: 'number' as const },
+  read_at: { type: 'number' as const },
+  next_attempt_at: { type: 'number' as const },
 }
 
 /** 结果 → 工具回执（snake_case + 去掉未声明的 structured）。 */
@@ -62,6 +64,8 @@ function callbackOut(callback: RunCallbackState) {
     attempts: callback.attempts,
     ...(callback.reason === undefined ? {} : { reason: callback.reason }),
     ...(callback.deliveredAt === undefined ? {} : { delivered_at: callback.deliveredAt }),
+    ...(callback.readAt === undefined ? {} : { read_at: callback.readAt }),
+    ...(callback.nextAttemptAt === undefined ? {} : { next_attempt_at: callback.nextAttemptAt }),
   }
 }
 
@@ -182,7 +186,9 @@ export function defineWindowStatusTool(deps: WindowDeps) {
           result_required: { type: 'boolean' },
           topic_id: { type: 'string' },
           started_topic_revision: { type: 'integer' },
+          duplicate_of: { type: 'array', items: { type: 'string' } },
           last_activity_at: { type: 'number' },
+          last_turn_at: { type: 'number' },
           lifecycle: {
             type: 'object',
             additionalProperties: false,
@@ -243,7 +249,9 @@ export function defineWindowStatusTool(deps: WindowDeps) {
         child_session_id: value.child_session_id,
         created_by: value.created_by,
         run_status: value.run_status,
+        ...(value.duplicate_of === undefined ? {} : { duplicate_of: value.duplicate_of }),
         last_activity_at: value.last_activity_at,
+        ...(value.last_turn_at === undefined ? {} : { last_turn_at: value.last_turn_at }),
         ...(value.topic_id === undefined ? {} : { topic_id: value.topic_id }),
         ...(value.started_topic_revision === undefined ? {} : { started_topic_revision: value.started_topic_revision }),
         callback_armed: value.callback_armed,

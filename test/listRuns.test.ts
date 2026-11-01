@@ -50,6 +50,92 @@ function exec(id: string): unknown {
   return { agent: { id } }
 }
 
+describe('window_list attention（分页/筛选不藏问题）', () => {
+  async function seeded(): Promise<FsRunStore> {
+    const store = await tempStore()
+    await store.create(record({ runId: 'run-ok', childSessionId: 'session-c-ok' }))
+    await store.create(record({
+      runId: 'run-failed',
+      childSessionId: 'session-c-failed',
+      status: 'completed',
+      callback: { status: 'failed', callbackId: 'result-run-failed', attempts: 2, reason: 'origin offline' },
+    }))
+    await store.create(record({
+      runId: 'run-unknown',
+      childSessionId: 'session-c-unknown',
+      status: 'completed',
+      callback: { status: 'unknown', callbackId: 'result-run-unknown', attempts: 1 },
+    }))
+    await store.create(record({
+      runId: 'run-unread',
+      childSessionId: 'session-c-unread',
+      status: 'completed',
+      callback: { status: 'delivered', callbackId: 'result-run-unread', attempts: 1, deliveredAt: 5 },
+    }))
+    await store.create(record({
+      runId: 'run-read',
+      childSessionId: 'session-c-read',
+      status: 'completed',
+      callback: { status: 'delivered', callbackId: 'result-run-read', attempts: 1, deliveredAt: 5, readAt: 9 },
+    }))
+    await store.create(record({
+      runId: 'run-orphan',
+      childSessionId: 'session-c-orphan',
+      lifecycle: { state: 'orphaned', reason: 'origin 不在线', at: 20 },
+    }))
+    return store
+  }
+
+  it('按「每一行只计一次」聚合：failed / unknown / unread / orphaned', async () => {
+    const store = await seeded()
+    const value = await listRuns(deps(store), {}, exec('session-o1'))
+    expect(value.attention).toMatchObject({
+      failed_callbacks: 1,
+      unknown_callbacks: 1,
+      unread_delivered: 1,
+      orphaned: 1,
+      total: 4,
+    })
+    expect(value.attention.hint).toContain('人工对账')
+    expect(value.attention.hint).toContain('自动退避重投')
+  })
+
+  it('status 过滤与分页都不影响 attention：翻到第二页也看得见问题', async () => {
+    const store = await seeded()
+    const activeOnly = await listRuns(deps(store), { status: 'active' }, exec('session-o1'))
+    expect(activeOnly.attention.total).toBe(4)
+    const page = await listRuns(deps(store), { limit: 1 }, exec('session-o1'))
+    expect(page.rows).toHaveLength(1)
+    expect(page.attention.total).toBe(4)
+  })
+
+  it('别人的 run 不计入本窗口的 attention', async () => {
+    const store = await seeded()
+    await store.create(record({
+      runId: 'run-other',
+      originSessionId: 'session-other',
+      childSessionId: 'session-c-other',
+      status: 'completed',
+      callback: { status: 'failed', callbackId: 'result-run-other', attempts: 1 },
+    }))
+    const value = await listRuns(deps(store), {}, exec('session-o1'))
+    expect(value.attention.total).toBe(4)
+  })
+
+  it('全部正常时 total=0 且不给 hint', async () => {
+    const store = await tempStore()
+    await store.create(record({ runId: 'run-ok', childSessionId: 'session-c-ok' }))
+    const value = await listRuns(deps(store), {}, exec('session-o1'))
+    expect(value.attention).toEqual({
+      failed_callbacks: 0,
+      unknown_callbacks: 0,
+      unread_delivered: 0,
+      orphaned: 0,
+      total: 0,
+    })
+  })
+})
+
 describe('window_list', () => {
   it('origin 只见自己的 run，child 只见分配给自己的，不返回 result 正文', async () => {
     const store = await tempStore()

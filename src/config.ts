@@ -20,6 +20,12 @@ export interface WindowConfig {
   leaseMinMs?: number
   /** claim 租约上限（§6.9）；缺省 24h。 */
   leaseMaxMs?: number
+  /** 回调自动重试的扫描间隔；缺省 2s。 */
+  callbackRetryMs?: number
+  /** child 推进写 lastTurnAt 的节流间隔；缺省 30s。 */
+  activityTouchMs?: number
+  /** 回调送达后多久仍未读到才允许对账补投；缺省 60s。 */
+  callbackGraceMs?: number
 }
 
 /** 校验并补默认值后的配置。 */
@@ -29,6 +35,9 @@ export interface ResolvedWindowConfig {
   waitPollMs: number
   leaseMinMs: number
   leaseMaxMs: number
+  callbackRetryMs: number
+  activityTouchMs: number
+  callbackGraceMs: number
 }
 
 /** 默认值：集中一处，便于测试与文档引用。 */
@@ -37,6 +46,9 @@ export const DEFAULT_WINDOW_CONFIG: ResolvedWindowConfig = {
   waitPollMs: 500,
   leaseMinMs: 1_000,
   leaseMaxMs: 24 * 60 * 60 * 1000,
+  callbackRetryMs: 2_000,
+  activityTouchMs: 30_000,
+  callbackGraceMs: 60_000,
 }
 
 function positiveInt(raw: unknown, name: string, min: number): number | undefined {
@@ -59,6 +71,9 @@ export function resolveConfig(raw: WindowConfig = {}): ResolvedWindowConfig {
   const waitPollMs = positiveInt(raw.waitPollMs, 'waitPollMs', 50) ?? DEFAULT_WINDOW_CONFIG.waitPollMs
   const leaseMinMs = positiveInt(raw.leaseMinMs, 'leaseMinMs', 1) ?? DEFAULT_WINDOW_CONFIG.leaseMinMs
   const leaseMaxMs = positiveInt(raw.leaseMaxMs, 'leaseMaxMs', 1) ?? DEFAULT_WINDOW_CONFIG.leaseMaxMs
+  const callbackRetryMs = positiveInt(raw.callbackRetryMs, 'callbackRetryMs', 100) ?? DEFAULT_WINDOW_CONFIG.callbackRetryMs
+  const activityTouchMs = positiveInt(raw.activityTouchMs, 'activityTouchMs', 1_000) ?? DEFAULT_WINDOW_CONFIG.activityTouchMs
+  const callbackGraceMs = positiveInt(raw.callbackGraceMs, 'callbackGraceMs', 1_000) ?? DEFAULT_WINDOW_CONFIG.callbackGraceMs
   if (leaseMaxMs < leaseMinMs) {
     throw new WindowError('WINDOW_CONFIG_INVALID', `配置 leaseMaxMs(${leaseMaxMs}) 不能小于 leaseMinMs(${leaseMinMs})`)
   }
@@ -68,5 +83,8 @@ export function resolveConfig(raw: WindowConfig = {}): ResolvedWindowConfig {
     waitPollMs,
     leaseMinMs,
     leaseMaxMs,
+    callbackRetryMs,
+    activityTouchMs,
+    callbackGraceMs,
   }
 }

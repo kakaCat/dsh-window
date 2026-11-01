@@ -112,6 +112,8 @@ export async function dispatchTask(
         kind: SEED_KIND,
         scenario: 'branch',
         runId,
+        // seed 的消息 id 由 runId 派生：同一条 run 的投递天然幂等，也便于按 run 对账。
+        messageId: `seed-${runId}`,
       })
       messageId = created.messageId
       const sent = await delivery.deliver(input.toWindow, created.message)

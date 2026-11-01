@@ -35,10 +35,13 @@ pnpm build
 | `orphanTimeoutMs` | 24h | 孤儿 run 判定超时 |
 | `waitPollMs` | 500ms | `window_wait` 轮询间隔 |
 | `leaseMinMs` / `leaseMaxMs` | 1s / 24h | 协作占用（claim）租约上下限，倒挂即装配期失败 |
+| `callbackRetryMs` | 2s | 回调自动重试的扫描间隔 |
+| `activityTouchMs` | 30s | child 推进写 `last_turn_at` 的节流间隔 |
+| `callbackGraceMs` | 60s | 回调送达后多久仍未读到，才允许读回执对账补投 |
 
 非法值在装配期响亮失败（`WINDOW_CONFIG_INVALID`）。
 
-三行各自读自己的 `config`：**`dataRoot` 必须三行同值**（缺省都指向同一个根，只改一行会让另外两行各写各的目录，run 与 topic 互相看不见）。其余键按用途只在对应行生效：`orphanTimeoutMs` 对话组、`waitPollMs` 管控组、`leaseMinMs` / `leaseMaxMs` 协作组。
+三行各自读自己的 `config`：**`dataRoot` 必须三行同值**（缺省都指向同一个根，只改一行会让另外两行各写各的目录，run 与 topic 互相看不见）。其余键按用途只在对应行生效：`orphanTimeoutMs` / `callbackRetryMs` / `activityTouchMs` / `callbackGraceMs` 对话组，`waitPollMs` 管控组，`leaseMinMs` / `leaseMaxMs` 协作组。
 
 ## 两个场景
 
@@ -98,6 +101,13 @@ pnpm build
 - branch 运行记录落盘、`run_id` 与 `callback_armed`；
 - `window_complete` 显式完成、结果回调（热窗口 followup、冷窗口 resume）、幂等与冲突拒绝；
 - `window_status` 查询与 `window_retry_callback` 手动重试；
+- **回调投递可靠性**：失败自动重试（2s 起指数退避、封顶 60s；`unknown` 与 origin 主动取消永不自动重投）；投递按 `callbackId` 幂等；
+- **读回执 `callback.read_at`**：`delivered` 只代表进收件箱，订阅宿主 `session/event` 观测到消息进入 origin 历史才记为已读；送达但既不在历史也不在收件箱（回合在写历史前被取消等）会被判定丢弃并安全补投一次；
+- **child 心跳 `last_turn_at`**：订阅 `agent/status` / `session/event`，按 run 节流记录 child 的真实推进，与会被自身投递重置的 `last_activity_at` 分开；
+- **回调正文上限**：内联正文超过 4000 字符即截断并给出完整长度与 `window_status(run_id)` 指针；完整结果始终留在 run 记录里，不会把长报告整段打进 origin 上下文；
+- **`window_list` 的 attention 聚合**：在分页与筛选之前统计 failed / unknown / unread / orphaned，`hint` 直接给行动建议——翻页不会把需要人看的 run 藏起来；
+- seed 的消息 id 由 `runId` 派生（`seed-<runId>`），同一条 run 的投递可幂等对账；
+- **重复开窗观测**：branch run 记录内容键 `open_key`，建窗时若同源同键仍有活动 run，回执带 `duplicate_of` 与处置建议——**只观测、不拦截**（避免误杀合法的并行分支），是否升级成自动去重按 [ADR-0007](docs/adr/0007-duplicate-open-observation.md) 的判据决定；
 - `window_dispatch` 复用已有 branch child 再派任务（单 child 单活动 run、需既有委派关系）；
 - `window_list` / `window_inspect` 发现与只读查看；
 - `window_send` 运行中引导（steer/queue）与 `window_interrupt` 中断/取消（turn/run，origin 主动取消不回调自己）；
