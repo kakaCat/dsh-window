@@ -40,8 +40,12 @@
 ## 四、如何验证
 
 - 单测：`test/branchContracts.test.ts`（文本、活动 run 判定、挂载/释放、无能力降级、agent 被替换）；
-- 真机：重启后开一个 branch 子窗，在它的会话日志里 grep `DSH Window 分支契约`，
-  应出现在 `system/message` 中；再让它跑多轮，确认压缩后契约仍在、仍会 `window_complete`。
+- 真机（2026-11-01 已跑）：重启后开一个 branch 子窗自检——
+  - run 记录 `contractAttached = true`；
+  - 子窗回答 `origin_window` 的值与 run 的 `originSessionId` **完全一致**（该值只在契约里，
+    seed 里只有 `run_id`）→ 契约确实进了模型；
+  - 子窗会话日志里 `DSH Window 分支契约` 出现 5 次（system/message 与后续请求）；
+  - 首次失败版本的读数（`contract=NO_CONTRACT`）保留在 run 记录里作为对照。
 
 ## 五、第一次实机验证失败与修正（重要）
 
