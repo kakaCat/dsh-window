@@ -1204,6 +1204,13 @@ export interface WindowDeps {
   activityTouchMs?: number
   /** 回调已送达但未证实被读过时，多久之后才允许对账补投；缺省 60s。 */
   callbackGraceMs?: number
+  /**
+   * 只对这段时间内送达的回调做读回执对账；缺省 7 天。
+   *
+   * 更早的 `delivered` 记录多半来自会话被删除/归档/历史重建的场景，那时判 `absent`
+   * 并补投只会把旧结果重新砸进 origin。观测价值上限远低于打扰成本。
+   */
+  callbackReceiptWindowMs?: number
   now(): number
   newRunId(): string
 }

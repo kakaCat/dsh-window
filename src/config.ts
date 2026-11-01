@@ -26,6 +26,8 @@ export interface WindowConfig {
   activityTouchMs?: number
   /** 回调送达后多久仍未读到才允许对账补投；缺省 60s。 */
   callbackGraceMs?: number
+  /** 只对这段时间内送达的回调做回执对账；缺省 7 天。 */
+  callbackReceiptWindowMs?: number
 }
 
 /** 校验并补默认值后的配置。 */
@@ -38,6 +40,7 @@ export interface ResolvedWindowConfig {
   callbackRetryMs: number
   activityTouchMs: number
   callbackGraceMs: number
+  callbackReceiptWindowMs: number
 }
 
 /** 默认值：集中一处，便于测试与文档引用。 */
@@ -49,6 +52,7 @@ export const DEFAULT_WINDOW_CONFIG: ResolvedWindowConfig = {
   callbackRetryMs: 2_000,
   activityTouchMs: 30_000,
   callbackGraceMs: 60_000,
+  callbackReceiptWindowMs: 7 * 24 * 60 * 60 * 1000,
 }
 
 function positiveInt(raw: unknown, name: string, min: number): number | undefined {
@@ -74,6 +78,8 @@ export function resolveConfig(raw: WindowConfig = {}): ResolvedWindowConfig {
   const callbackRetryMs = positiveInt(raw.callbackRetryMs, 'callbackRetryMs', 100) ?? DEFAULT_WINDOW_CONFIG.callbackRetryMs
   const activityTouchMs = positiveInt(raw.activityTouchMs, 'activityTouchMs', 1_000) ?? DEFAULT_WINDOW_CONFIG.activityTouchMs
   const callbackGraceMs = positiveInt(raw.callbackGraceMs, 'callbackGraceMs', 1_000) ?? DEFAULT_WINDOW_CONFIG.callbackGraceMs
+  const callbackReceiptWindowMs = positiveInt(raw.callbackReceiptWindowMs, 'callbackReceiptWindowMs', 60_000)
+    ?? DEFAULT_WINDOW_CONFIG.callbackReceiptWindowMs
   if (leaseMaxMs < leaseMinMs) {
     throw new WindowError('WINDOW_CONFIG_INVALID', `配置 leaseMaxMs(${leaseMaxMs}) 不能小于 leaseMinMs(${leaseMinMs})`)
   }
@@ -86,5 +92,6 @@ export function resolveConfig(raw: WindowConfig = {}): ResolvedWindowConfig {
     callbackRetryMs,
     activityTouchMs,
     callbackGraceMs,
+    callbackReceiptWindowMs,
   }
 }

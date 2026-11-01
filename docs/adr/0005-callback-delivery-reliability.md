@@ -28,6 +28,7 @@
 
 - 订阅宿主 `session/event`，看进入历史的消息 `source.callbackId`；命中某 run 的回调即写 `readAt`，并清掉 `nextAttemptAt`；
 - 状态机不变（`delivered` 仍是终态之一），`readAt` 是「已读」的证明：没有 `readAt` 的 `delivered` 只是收件箱回执；
+- 只对 **`callbackReceiptWindowMs`（缺省 7 天）内送达**的回调做对账：更早的 `delivered` 若在历史里找不到，多半是 origin 会话被删除 / 归档 / 历史重建，此时判 `absent` 并补投只会把旧结果重新砸进 origin——打扰成本超过观测价值；
 - 超过 `callbackGraceMs`（缺省 60s）仍无 `readAt` 时做一次对账（每 run 至少间隔 5 分钟）：
   - `history` → 落 `readAt`；
   - `inbox` → 仍在排队，什么都不做；

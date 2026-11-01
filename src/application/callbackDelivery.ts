@@ -212,6 +212,7 @@ export async function refreshCallbackReceipts(
   const activity = deps.sessionActivity
   if (store === undefined || !store.available() || activity === undefined) return summary
   const grace = deps.callbackGraceMs ?? 60_000
+  const window = deps.callbackReceiptWindowMs ?? 7 * 24 * 60 * 60 * 1000
   let runs: RunRecord[]
   try {
     runs = await store.list()
@@ -225,6 +226,9 @@ export async function refreshCallbackReceipts(
     if (callback.status !== 'delivered' || callback.readAt !== undefined) continue
     const deliveredAt = callback.deliveredAt ?? run.updatedAt
     if (at - deliveredAt < grace) continue
+    // 只对账「近期」的 delivered：更早记录若在历史里找不到，多半是 origin 会话被删除/
+    // 归档/重建，判 absent 并补投只会把旧结果重新砸进 origin，打扰成本远超观测价值。
+    if (at - deliveredAt > window) continue
     if (requeued.has(run.runId)) continue
     const lastCheck = recheck.get(run.runId)
     if (lastCheck !== undefined && at - lastCheck < RECEIPT_RECHECK_MS) continue

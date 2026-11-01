@@ -38,10 +38,11 @@ pnpm build
 | `callbackRetryMs` | 2s | 回调自动重试的扫描间隔 |
 | `activityTouchMs` | 30s | child 推进写 `last_turn_at` 的节流间隔 |
 | `callbackGraceMs` | 60s | 回调送达后多久仍未读到，才允许读回执对账补投 |
+| `callbackReceiptWindowMs` | 7d | 只对这段时间内送达的回调做回执对账（更早的不判丢弃、不补投） |
 
 非法值在装配期响亮失败（`WINDOW_CONFIG_INVALID`）。
 
-三行各自读自己的 `config`：**`dataRoot` 必须三行同值**（缺省都指向同一个根，只改一行会让另外两行各写各的目录，run 与 topic 互相看不见）。其余键按用途只在对应行生效：`orphanTimeoutMs` / `callbackRetryMs` / `activityTouchMs` / `callbackGraceMs` 对话组，`waitPollMs` 管控组，`leaseMinMs` / `leaseMaxMs` 协作组。
+三行各自读自己的 `config`：**`dataRoot` 必须三行同值**（缺省都指向同一个根，只改一行会让另外两行各写各的目录，run 与 topic 互相看不见）。其余键按用途只在对应行生效：`orphanTimeoutMs` / `callbackRetryMs` / `activityTouchMs` / `callbackGraceMs` / `callbackReceiptWindowMs` 对话组，`waitPollMs` 管控组，`leaseMinMs` / `leaseMaxMs` 协作组。
 
 ## 两个场景
 

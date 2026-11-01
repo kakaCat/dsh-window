@@ -18,12 +18,14 @@ describe('配置校验', () => {
       callbackRetryMs: 2_000,
       activityTouchMs: 30_000,
       callbackGraceMs: 60_000,
+      callbackReceiptWindowMs: 7 * 24 * 60 * 60 * 1000,
     })
     expect(resolveConfig({ leaseMinMs: 5_000, leaseMaxMs: 10_000 })).toMatchObject({ leaseMinMs: 5_000, leaseMaxMs: 10_000 })
-    expect(resolveConfig({ callbackRetryMs: 500, activityTouchMs: 5_000, callbackGraceMs: 2_000 })).toMatchObject({
+    expect(resolveConfig({ callbackRetryMs: 500, activityTouchMs: 5_000, callbackGraceMs: 2_000, callbackReceiptWindowMs: 3_600_000 })).toMatchObject({
       callbackRetryMs: 500,
       activityTouchMs: 5_000,
       callbackGraceMs: 2_000,
+      callbackReceiptWindowMs: 3_600_000,
     })
   })
 

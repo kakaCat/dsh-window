@@ -145,6 +145,7 @@ export function createWindowRuntime(
     callbackRetryMs: resolved.callbackRetryMs,
     activityTouchMs: resolved.activityTouchMs,
     callbackGraceMs: resolved.callbackGraceMs,
+    callbackReceiptWindowMs: resolved.callbackReceiptWindowMs,
     isWindowAlive: (windowKey: string): boolean => {
       let raw: unknown
       try {

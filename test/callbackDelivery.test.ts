@@ -62,7 +62,7 @@ function makeDelivery(plan: Array<boolean | 'throw'>): { port: SeedDeliveryPort;
 function makeDeps(
   store: MemoryRunStore,
   delivery: SeedDeliveryPort,
-  options: { clock?: { at: number }; activity?: SessionActivityPort; graceMs?: number } = {},
+  options: { clock?: { at: number }; activity?: SessionActivityPort; graceMs?: number; receiptWindowMs?: number } = {},
 ): WindowDeps {
   const clock = options.clock ?? { at: 10_000 }
   return {
@@ -72,6 +72,7 @@ function makeDeps(
     runStore: store,
     ...(options.activity === undefined ? {} : { sessionActivity: options.activity }),
     ...(options.graceMs === undefined ? {} : { callbackGraceMs: options.graceMs }),
+    ...(options.receiptWindowMs === undefined ? {} : { callbackReceiptWindowMs: options.receiptWindowMs }),
     now: () => clock.at,
     newRunId: () => 'run-2',
   }
@@ -280,6 +281,35 @@ describe('读回执对账（delivered ≠ read）', () => {
     // 就算时间过去、节流过期，本进程也不再补投同一个 run。
     const again = await refreshCallbackReceipts(deps, 10_000 + 10 * 60_000, new Map(), requeued)
     expect(again.redelivered).toEqual([])
+  })
+
+  it('早于回执窗口的 delivered 不对账：旧结果不会被重新砸进 origin', async () => {
+    const store = new MemoryRunStore()
+    // 30 天前送达、从未读到——多半是 origin 会话已删除/归档，不该判 absent 补投。
+    const deliveredAt = 10_000 - 30 * 24 * 60 * 60 * 1000
+    await store.create(completed({
+      callback: { status: 'delivered', callbackId: 'result-run-1', attempts: 1, deliveredAt },
+    }))
+    const activity = makeActivity(async () => 'absent')
+    const clock = { at: 10_000 }
+    const deps = makeDeps(store, makeDelivery([true]).port, { clock, activity, graceMs: 100, receiptWindowMs: 7 * 24 * 60 * 60 * 1000 })
+    const result = await refreshCallbackReceipts(deps, clock.at)
+    expect(result.checked).toBe(0)
+    expect(activity.calls).toBe(0)
+    expect((await store.get('run-1'))?.callback).toMatchObject({ status: 'delivered' })
+  })
+
+  it('回执窗口内的 delivered 照常对账', async () => {
+    const store = new MemoryRunStore()
+    await store.create(completed({
+      callback: { status: 'delivered', callbackId: 'result-run-1', attempts: 1, deliveredAt: 1_000 },
+    }))
+    const activity = makeActivity(async () => 'history')
+    const clock = { at: 10_000 }
+    const deps = makeDeps(store, makeDelivery([true]).port, { clock, activity, graceMs: 100, receiptWindowMs: 7 * 24 * 60 * 60 * 1000 })
+    const result = await refreshCallbackReceipts(deps, clock.at)
+    expect(result.checked).toBe(1)
+    expect(result.read).toEqual(['run-1'])
   })
 
   it('已读的回调不再进入对账', async () => {
