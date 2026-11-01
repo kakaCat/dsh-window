@@ -126,6 +126,30 @@ pnpm build
 
 **边界**：本插件独立运行，不依赖也不感知任何外部业务插件。普通 `turn/end` 不会触发完成回调；主题的 `activeRuns` 只是 run_id 指针，实时状态以 run store / `window_list` 为准。跨工作区协作有两条通路：① 父子窗口（origin 自己开的 child，FR-21）；② 全局主题（不同 workspace 的既有窗口按 topic_id 加入后互发消息，FR-22）。全局主题是**能力式加入**——知道 topic_id 即可加入，因此 topic_id 应按共享凭证对待；项目内主题不跨项目可见，且 `target_workspace` 仍不能与项目内 `topic_id` 组合。
 
+## 读数对照：每个字段什么时候该信
+
+`window_status` / `window_list` 的字段含义相近但语义不同，误读会直接导致错误决策（本仓曾因此两次误判「已送达」=「已处理」）。按这张表读：
+
+| 字段 | 含义 | 什么时候信 / 陷阱 |
+|---|---|---|
+| `run_status` | 任务结局：`pending` / `running` / 完成或终止态 | 权威。但 `running` 只说明 run 未收口，不代表 child 还在干活 |
+| `callback.status` | `not_armed` / `pending` / `delivered` / `failed` / `unknown` / `not_requested` | `delivered` **只代表宿主收件箱收下了**，不代表 origin 读过 |
+| `callback.read_at` | 消息进入 origin 历史的时间 | **这才是「已读」**。没有它 = 只进了收件箱，或被丢弃（对账会补投一次） |
+| `callback.attempts` | 投递尝试次数 | 正常应稳定在 1；持续增长说明投递在重试 |
+| `callback.next_attempt_at` | 下次自动重试时间 | 有它就说明还在退避重试，不必手动 `window_retry_callback` |
+| `callback.delivered_at` | 最后一次成功进收件箱的时间 | 与 `read_at` 的差值就是「排队等待被读」的时长 |
+| `last_activity_at` | 插件**写入/投递**时间 | ⚠️ 会被插件自己的投递重置，**不能单独当停滞判据** |
+| `last_turn_at` | child 最近一次真实推进（回合/事件） | 判断「还在不在干活」看它；两者都旧才值得怀疑 |
+| `duplicate_of` | 建窗时同源同内容的既有活动 run | 只观测、不拦截；确认重复再手动收口多余那条 |
+| `contract_attached` | 建窗时是否挂上常驻分支契约 | `false` 常见于冷会话（等 `agent/created` 补挂），不表示失败 |
+| `attention` | `window_list` 的注意力聚合 | 在分页/筛选前统计；`total=0` 时不需要任何人上手 |
+
+三个最容易踩的坑：
+
+1. **把 `delivered` 当「已处理」**——它只证明收件箱收了；要 `read_at` 才证明 origin 真的读了。
+2. **用 `last_activity_at` 判停滞**——它会被自身投递刷新，「越救越新」，永远测不到停住。
+3. **把 `unknown` 当可重试**——它表示「可能已送达」，盲目重投会重复；必须先人工对账。
+
 ## 数据路径
 
 插件根固定为 `$DSH_HOME/storages/dsh-window`（未设置 `DSH_HOME` 时默认 `~/.dsh/storages/dsh-window`）；
