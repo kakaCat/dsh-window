@@ -9,6 +9,7 @@
  *
  * @module dsh-window/application/windowObservers
  */
+import { installBranchContracts } from './branchContracts.js'
 import { startCallbackRetry, type CallbackRetryHandle } from './callbackDelivery.js'
 import type { WindowDeps } from './ports.js'
 import { RunActivityTracker } from './runActivity.js'
@@ -35,6 +36,9 @@ export function startWindowObservers(deps: WindowDeps, logger?: ObserverLogger):
     : activity.watch((event) => {
         void tracker.handle(event)
       })
+  // 常驻契约：seed 会被上下文压缩掉（实测 32 个 branch 子会话里 3 个已丢），
+  // 所以完成契约要挂在 system prompt 上，而不是只靠一次性消息。
+  const stopContracts = installBranchContracts(deps)
 
   let retry: CallbackRetryHandle | undefined
   try {
@@ -61,6 +65,7 @@ export function startWindowObservers(deps: WindowDeps, logger?: ObserverLogger):
       if (stopped) return
       stopped = true
       unsubscribe?.()
+      stopContracts()
       retry?.stop()
       activity?.dispose?.()
     },

@@ -16,6 +16,7 @@ import { FsTopicStore } from './adapters/topicStore.js'
 import { JsonSchemaGuard } from './adapters/jsonSchemaGuard.js'
 import { SessionWindowInspector } from './adapters/sessionWindowInspector.js'
 import { SessionActivity } from './adapters/sessionActivity.js'
+import { BranchPrompts } from './adapters/branchPrompts.js'
 import { SessionWindowOpener } from './adapters/sessionWindowOpener.js'
 import type { ResolvedWindowConfig } from './config.js'
 import { WindowError } from './shared/errors.js'
@@ -124,6 +125,7 @@ export function createWindowRuntime(
   const inspector = new SessionWindowInspector(() => sessionControllerSvc, () => agentsSvc)
   const control = new AgentControl(() => agentsSvc, () => sessionControllerSvc)
   const sessionActivity = new SessionActivity(() => ctx, () => agentsSvc, () => sessionControllerSvc)
+  const branchPrompts = new BranchPrompts(() => ctx, () => agentsSvc)
   const schemaGuard = new JsonSchemaGuard()
   const runStore = new FsRunStore(resolved.dataRoot === undefined ? {} : { root: resolved.dataRoot })
   const topicStore = new FsTopicStore(resolved.dataRoot === undefined ? {} : { root: resolved.dataRoot })
@@ -142,6 +144,7 @@ export function createWindowRuntime(
     orphanTimeoutMs: resolved.orphanTimeoutMs,
     claimLeaseBounds: { minMs: resolved.leaseMinMs, maxMs: resolved.leaseMaxMs },
     sessionActivity,
+    branchPrompts,
     callbackRetryMs: resolved.callbackRetryMs,
     activityTouchMs: resolved.activityTouchMs,
     callbackGraceMs: resolved.callbackGraceMs,

@@ -89,8 +89,9 @@ describe('Cordis 装载（三行：对话 / 管控 / 协作）', () => {
     expect(runtime.effects).toHaveLength(1)
     expect(runtime.logs.join('')).not.toContain('ctx.effect 不可用')
 
-    // 观测接线只由对话组负责：心跳/读回执订阅这两个宿主事件。
-    expect(runtime.subscriptions).toEqual(['session/event', 'agent/status'])
+    // 观测接线只由对话组负责：心跳/读回执（session/event、agent/status）+ 常驻分支契约
+    // （agent/created、agent/disposed）。
+    expect(runtime.subscriptions).toEqual(['session/event', 'agent/status', 'agent/created', 'agent/disposed'])
   })
 
   it('管控组只注册自己的 5 个工具，不第二次 provide、不跑 drain', async () => {
@@ -146,7 +147,7 @@ describe('Cordis 装载（三行：对话 / 管控 / 协作）', () => {
     const all = names(runtime)
     expect(all).toHaveLength(16)
     expect(new Set(all).size).toBe(16)
-    // 三行全开也只有对话组订阅一次，不会三份调度器重复重投。
-    expect(runtime.subscriptions).toEqual(['session/event', 'agent/status'])
+    // 三行全开也只有对话组订阅一次，不会三份调度器重复重投、重复注入契约。
+    expect(runtime.subscriptions).toEqual(['session/event', 'agent/status', 'agent/created', 'agent/disposed'])
   })
 })

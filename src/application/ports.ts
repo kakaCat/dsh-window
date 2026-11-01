@@ -175,6 +175,22 @@ export interface SessionActivityEvent {
 }
 
 /**
+ * 子窗口常驻契约端口。
+ *
+ * 在 agent 创建时按会话 id 决定要不要注入一段 system prompt section；返回的文本为
+ * `undefined` 表示不注入。实现只做「挂 section」，不改变会话内容、不完成 run。
+ */
+export interface BranchPromptPort {
+  /**
+   * 订阅 agent 创建 / 销毁；对 `decorate` 返回了文本的会话挂上常驻 section。
+   * 返回取消订阅（并释放已挂 section）。实现必须永不抛。
+   */
+  watch(decorate: (sessionId: string) => Promise<string | undefined>): () => void
+  /** 释放订阅。可选。 */
+  dispose?(): void
+}
+
+/**
  * 会话活动观测端口（只读）。
  *
  * 只订阅宿主事件并做只读核对，不改会话、不完成 run；实现必须永不抛。
@@ -1198,6 +1214,8 @@ export interface WindowDeps {
   isWindowAlive?(windowKey: string): boolean
   /** 宿主会话活动观测（心跳 / 读回执）；缺失时两者都安静降级，不影响工具面。 */
   sessionActivity?: SessionActivityPort
+  /** 子窗口常驻契约注入；缺失时退化为「只有 seed 里写了一次」。 */
+  branchPrompts?: BranchPromptPort
   /** 回调自动重试的扫描间隔；缺省 2s。 */
   callbackRetryMs?: number
   /** child 推进写 `lastTurnAt` 的最小节流间隔；缺省 30s。 */

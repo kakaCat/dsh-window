@@ -108,6 +108,7 @@ pnpm build
 - **回调正文上限**：内联正文超过 4000 字符即截断并给出完整长度与 `window_status(run_id)` 指针；完整结果始终留在 run 记录里，不会把长报告整段打进 origin 上下文；
 - **`window_list` 的 attention 聚合**：在分页与筛选之前统计 failed / unknown / unread / orphaned，`hint` 直接给行动建议——翻页不会把需要人看的 run 藏起来；
 - seed 的消息 id 由 `runId` 派生（`seed-<runId>`），同一条 run 的投递可幂等对账；
+- **常驻分支契约**：给活动 branch child 的 system prompt 注入一条 `dsh-window-branch` section（run_id + 完成必须 `window_complete` + 回调字数上限），agent 销毁时释放；实测 32 个真实子会话里 3 个的 seed 已被上下文压缩掉，所以契约不能只写在 seed 里（[ADR-0008](docs/adr/0008-branch-contract-prompt-section.md)）；
 - **重复开窗观测**：branch run 记录内容键 `open_key`，建窗时若同源同键仍有活动 run，回执带 `duplicate_of` 与处置建议——**只观测、不拦截**（避免误杀合法的并行分支），是否升级成自动去重按 [ADR-0007](docs/adr/0007-duplicate-open-observation.md) 的判据决定；
 - `window_dispatch` 复用已有 branch child 再派任务（单 child 单活动 run、需既有委派关系）；
 - `window_list` / `window_inspect` 发现与只读查看；
